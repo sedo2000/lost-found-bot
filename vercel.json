@@ -4,38 +4,12 @@
     {
       "src": "api/webhook.py",
       "use": "@vercel/python"
-    },
-    {
-      "src": "api/cron_match.py",
-      "use": "@vercel/python"
-    },
-    {
-      "src": "api/cron_cleanup.py",
-      "use": "@vercel/python"
     }
   ],
   "routes": [
     {
-      "src": "/api/webhook",
+      "src": "/(.*)",
       "dest": "api/webhook.py"
-    },
-    {
-      "src": "/api/cron/match",
-      "dest": "api/cron_match.py"
-    },
-    {
-      "src": "/api/cron/cleanup",
-      "dest": "api/cron_cleanup.py"
-    }
-  ],
-  "crons": [
-    {
-      "path": "/api/cron/match",
-      "schedule": "*/10 * * * *"
-    },
-    {
-      "path": "/api/cron/cleanup",
-      "schedule": "0 3 * * *"
     }
   ]
 }
