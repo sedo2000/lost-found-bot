@@ -5,6 +5,7 @@ Vercel-ready entrypoint: app
 import os
 import re
 import traceback
+import httpx
 from typing import Optional, Dict, List, Tuple
 
 import asyncpg
@@ -27,11 +28,13 @@ load_dotenv()
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 WEBHOOK_SECRET = os.getenv("TELEGRAM_WEBHOOK_SECRET", "")
 DATABASE_URL = os.getenv("DATABASE_URL", "")
+SIGHTENGINE_USER = os.getenv("SIGHTENGINE_USER", "")
+SIGHTENGINE_SECRET = os.getenv("SIGHTENGINE_SECRET", "")
 
 print(f"🚀 Bot starting...")
 print(f"   BOT_TOKEN: {'✅ set' if BOT_TOKEN else '❌ MISSING'}")
-print(f"   WEBHOOK_SECRET: {'✅ set' if WEBHOOK_SECRET else '⚠️ not set'}")
 print(f"   DATABASE_URL: {'✅ set' if DATABASE_URL else '❌ MISSING'}")
+print(f"   SIGHTENGINE: {'✅ set' if SIGHTENGINE_USER else '⚠️ not set'}")
 
 # ============ الثوابت ============
 CITIES = ["بغداد", "البصرة", "الموصل", "أربيل", "النجف", "كربلاء",
@@ -62,6 +65,9 @@ CATEGORIES = {
     }},
     "other": {"ar": "📦 أخرى", "subs": {"other": "📦 أخرى"}},
 }
+
+# حد التحذيرات قبل الحظر
+MAX_WARNINGS = 2
 
 # ============ قاعدة البيانات ============
 _pool: Optional[asyncpg.Pool] = None
@@ -107,6 +113,56 @@ async def get_user(user_id: int) -> Optional[Dict]:
         return dict(row) if row else None
 
 
+async def add_warning(user_id: int) -> int:
+    """إضافة تحذير وإرجاع العدد"""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS warnings (
+                id BIGSERIAL PRIMARY KEY,
+                user_id BIGINT NOT NULL,
+                reason VARCHAR(200),
+                created_at TIMESTAMP DEFAULT NOW()
+            )
+        """)
+        await conn.execute(
+            "INSERT INTO warnings (user_id, reason) VALUES ($1, $2)",
+            user_id, "صورة غير لائقة"
+        )
+        count = await conn.fetchval(
+            "SELECT COUNT(*) FROM warnings WHERE user_id = $1", user_id
+        )
+        return count
+
+
+async def is_user_banned(user_id: int) -> bool:
+    """فحص إذا كان المستخدم محظور"""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS banned_users (
+                user_id BIGINT PRIMARY KEY,
+                reason VARCHAR(200),
+                banned_at TIMESTAMP DEFAULT NOW()
+            )
+        """)
+        row = await conn.fetchrow(
+            "SELECT * FROM banned_users WHERE user_id = $1", user_id
+        )
+        return row is not None
+
+
+async def ban_user(user_id: int, reason: str):
+    """حظر المستخدم"""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute("""
+            INSERT INTO banned_users (user_id, reason)
+            VALUES ($1, $2)
+            ON CONFLICT (user_id) DO UPDATE SET reason = $2
+        """, user_id, reason)
+
+
 async def create_item(user_id: int, item_type: str, category: str,
                      subcategory: str, description: str, city: str,
                      time_range: str, photo_file_id: str = None) -> Dict:
@@ -133,6 +189,37 @@ async def get_user_items(user_id: int, limit: int = 10) -> List[Dict]:
             ORDER BY created_at DESC LIMIT $2
         """, user_id, limit)
         return [dict(r) for r in rows]
+
+
+async def count_user_items(user_id: int) -> int:
+    """عدد بلاغات المستخدم"""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        return await conn.fetchval(
+            "SELECT COUNT(*) FROM items WHERE user_id = $1 AND status = 'active'",
+            user_id
+        ) or 0
+
+
+async def delete_all_user_items(user_id: int) -> int:
+    """حذف كل بلاغات المستخدم"""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        # تحديث الحالة بدل الحذف (للسلامة)
+        result = await conn.execute("""
+            UPDATE items SET status = 'deleted'
+            WHERE user_id = $1 AND status = 'active'
+        """, user_id)
+        # استخراج العدد من النتيجة
+        try:
+            count = int(result.split()[-1])
+        except:
+            count = 0
+        # تصفير العداد
+        await conn.execute("""
+            UPDATE users SET total_reports = 0 WHERE user_id = $1
+        """, user_id)
+        return count
 
 
 async def search_items(query: str = None, city: str = None,
@@ -192,6 +279,101 @@ async def get_global_stats() -> Dict:
                 "SELECT COUNT(*) FROM users"
             ) or 0,
         }
+
+
+# ============ 🛡️ كشف الصور الإباحية ============
+async def check_image_nsfw(file_id: str) -> Tuple[bool, str]:
+    """
+    فحص الصورة للكشف عن المحتوى الإباحي
+    
+    Returns:
+        (is_safe: bool, reason: str)
+    """
+    if not SIGHTENGINE_USER or not SIGHTENGINE_SECRET:
+        print("⚠️ Sightengine not configured - skipping check")
+        return True, "no_check"
+    
+    try:
+        # 1. جلب رابط الملف من Telegram
+        async with httpx.AsyncClient(timeout=10) as client:
+            # الحصول على file_path
+            file_resp = await client.get(
+                f"https://api.telegram.org/bot{BOT_TOKEN}/getFile",
+                params={"file_id": file_id}
+            )
+            file_data = file_resp.json()
+            
+            if not file_data.get("ok"):
+                print(f"❌ Cannot get file: {file_data}")
+                return True, "telegram_error"
+            
+            file_path = file_data["result"]["file_path"]
+            file_url = f"https://api.telegram.org/file/bot{BOT_TOKEN}/{file_path}"
+            
+            # 2. فحص الصورة عبر Sightengine
+            check_resp = await client.get(
+                "https://api.sightengine.com/1.0/check.json",
+                params={
+                    "models": "nudity-2.0,weapon,gore",
+                    "api_user": SIGHTENGINE_USER,
+                    "api_secret": SIGHTENGINE_SECRET,
+                    "url": file_url,
+                }
+            )
+            
+            result = check_resp.json()
+            
+            if result.get("status") != "success":
+                print(f"⚠️ Sightengine error: {result}")
+                return True, "sightengine_error"
+            
+            # 3. تحليل النتائج
+            nudity = result.get("nudity", {})
+            weapon = result.get("weapon", {})
+            gore = result.get("gore", {})
+            
+            # نسب المحتوى الإباحي
+            sexual_activity = nudity.get("sexual_activity", 0)
+            sexual_display = nudity.get("sexual_display", 0)
+            erotica = nudity.get("erotica", 0)
+            very_suggestive = nudity.get("very_suggestive", 0)
+            
+            # نسب العنف
+            weapon_prob = weapon.get("classes", {}).get("firearm", 0) if weapon else 0
+            gore_prob = gore.get("prob", 0) if gore else 0
+            
+            # العتبات
+            THRESHOLD_NUDITY = 0.5
+            THRESHOLD_WEAPON = 0.7
+            THRESHOLD_GORE = 0.7
+            
+            reasons = []
+            
+            if sexual_activity > THRESHOLD_NUDITY:
+                reasons.append("محتوى جنسي صريح")
+            if sexual_display > THRESHOLD_NUDITY:
+                reasons.append("عرض جنسي")
+            if erotica > 0.7:
+                reasons.append("محتوى إباحي")
+            if very_suggestive > 0.8:
+                reasons.append("محتوى مثير جداً")
+            if weapon_prob > THRESHOLD_WEAPON:
+                reasons.append("سلاح")
+            if gore_prob > THRESHOLD_GORE:
+                reasons.append("عنف/دماء")
+            
+            if reasons:
+                return False, ", ".join(reasons)
+            
+            return True, "safe"
+    
+    except httpx.TimeoutException:
+        print("⚠️ Timeout in NSFW check")
+        return True, "timeout"
+    except Exception as e:
+        print(f"❌ Error in NSFW check: {e}")
+        traceback.print_exc()
+        return True, f"error: {e}"
 
 
 # ============ Matcher ============
@@ -373,6 +555,22 @@ def kb_match_actions(match_id: int) -> InlineKeyboardMarkup:
     ])
 
 
+def kb_my_items_actions() -> InlineKeyboardMarkup:
+    """أزرار صفحة بلاغاتي"""
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("🗑️ تصفير بلاغاتي", callback_data="clear_my")],
+        [InlineKeyboardButton("🔙 رجوع", callback_data="menu")],
+    ])
+
+
+def kb_confirm_clear() -> InlineKeyboardMarkup:
+    """تأكيد التصفير"""
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("✅ نعم، احذف الكل", callback_data="confirm_clear_yes")],
+        [InlineKeyboardButton("❌ لا، إلغاء", callback_data="confirm_clear_no")],
+    ])
+
+
 # ============ Telegram Application ============
 print("🔧 Building Telegram application...")
 app_tg = Application.builder().token(BOT_TOKEN).build()
@@ -381,25 +579,28 @@ print(f"✅ Telegram app built")
 
 # ============ Handlers ============
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    print(f"🎯 /start from user {update.effective_user.id}")
-    try:
-        user = update.effective_user
-        await get_or_create_user(user.id, user.username, user.first_name, user.last_name)
-        db_user = await get_user(user.id)
-        lang = db_user.get("lang", "ar") if db_user else "ar"
-        context.user_data.clear()
-        context.user_data["lang"] = lang
-        stats = await get_global_stats()
+    user = update.effective_user
+    
+    # 🛡️ فحص الحظر
+    if await is_user_banned(user.id):
         await update.message.reply_text(
-            t(lang, "welcome", **stats),
-            reply_markup=kb_main(lang),
+            "🚫 **أنت محظور من استخدام البوت**\n\n"
+            "السبب: مخالفة القوانين (رفع محتوى غير لائق)",
             parse_mode="Markdown"
         )
-        print(f"✅ /start handled")
-    except Exception as e:
-        print(f"❌ Error in /start: {e}")
-        traceback.print_exc()
-        await update.message.reply_text(f"❌ خطأ: {e}")
+        return
+    
+    await get_or_create_user(user.id, user.username, user.first_name, user.last_name)
+    db_user = await get_user(user.id)
+    lang = db_user.get("lang", "ar") if db_user else "ar"
+    context.user_data.clear()
+    context.user_data["lang"] = lang
+    stats = await get_global_stats()
+    await update.message.reply_text(
+        t(lang, "welcome", **stats),
+        reply_markup=kb_main(lang),
+        parse_mode="Markdown"
+    )
 
 
 async def cb_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -419,6 +620,12 @@ async def cb_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def cb_add(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
+    
+    # 🛡️ فحص الحظر
+    if await is_user_banned(q.from_user.id):
+        await q.edit_message_text("🚫 أنت محظور")
+        return
+    
     lang = context.user_data.get("lang", "ar")
     context.user_data["state"] = "choosing_type"
     context.user_data["item"] = {}
@@ -476,8 +683,6 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     lang = context.user_data.get("lang", "ar")
     text = update.message.text.strip()
 
-    print(f"📝 Text received: '{text[:50]}' (state={state})")
-
     if state == "waiting_description":
         if len(text) < 5:
             await update.message.reply_text("❌ الوصف قصير")
@@ -506,12 +711,64 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """معالج الصور - مع فحص NSFW"""
     if context.user_data.get("state") != "waiting_photo":
         return
+    
+    user_id = update.effective_user.id
     lang = context.user_data.get("lang", "ar")
+    
+    # 🛡️ فحص الحظر أولاً
+    if await is_user_banned(user_id):
+        await update.message.reply_text("🚫 أنت محظور")
+        return
+    
+    # 🛡️ فحص الصورة
     photo = update.message.photo[-1]
-    context.user_data["item"]["photo_file_id"] = photo.file_id
-    await finalize_item(update.message, context, lang)
+    file_id = photo.file_id
+    
+    # إشعار "جاري الفحص"
+    checking_msg = await update.message.reply_text("🔍 جاري فحص الصورة...")
+    
+    try:
+        is_safe, reason = await check_image_nsfw(file_id)
+        
+        if not is_safe:
+            # ❌ صورة مرفوضة
+            warning_count = await add_warning(user_id)
+            
+            if warning_count >= MAX_WARNINGS:
+                await ban_user(user_id, f"رفع محتوى غير لائق ({reason})")
+                await checking_msg.edit_text(
+                    f"🚫 **تم حظرك من البوت**\n\n"
+                    f"⚠️ السبب: رفع محتوى غير لائق\n"
+                    f"📊 التحذير: {warning_count}/{MAX_WARNINGS}\n\n"
+                    f"للاستفسار تواصل مع الإدارة.",
+                    parse_mode="Markdown"
+                )
+            else:
+                await checking_msg.edit_text(
+                    f"❌ **صورة مرفوضة!**\n\n"
+                    f"⚠️ السبب: {reason}\n\n"
+                    f"📊 التحذير: {warning_count}/{MAX_WARNINGS}\n"
+                    f"⚠️ عند الوصول لـ {MAX_WARNINGS} تحذيرات، سيتم حظرك!\n\n"
+                    f"📸 أرسل صورة أخرى مناسبة:",
+                    parse_mode="Markdown"
+                )
+            return
+        
+        # ✅ صورة آمنة
+        context.user_data["item"]["photo_file_id"] = file_id
+        await checking_msg.delete()
+        await finalize_item(update.message, context, lang)
+    
+    except Exception as e:
+        print(f"❌ Error in photo check: {e}")
+        traceback.print_exc()
+        # في حالة الخطأ، اقبل الصورة (لتفادي عرقلة المستخدم)
+        context.user_data["item"]["photo_file_id"] = file_id
+        await checking_msg.delete()
+        await finalize_item(update.message, context, lang)
 
 
 async def cb_city(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -538,7 +795,7 @@ async def cb_time(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await q.edit_message_text(
         t(lang, "send_photo"),
         reply_markup=InlineKeyboardMarkup([[
-            InlineKeyboardButton("⏭️ تخطي", callback_data="skip_photo")
+            InlineKeyboardButton("⏭️ تخطي الصورة", callback_data="skip_photo")
         ]]),
         parse_mode="Markdown"
     )
@@ -641,13 +898,65 @@ async def cb_my(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await q.edit_message_text(
         t(lang, "my_items", count=len(items)),
+        reply_markup=kb_my_items_actions(),
         parse_mode="Markdown"
     )
 
     for item in items:
         await send_item_card(q.message, item, lang)
 
-    await q.message.reply_text("🔙", reply_markup=kb_main(lang))
+
+async def cb_clear_my(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """طلب تأكيد تصفير البلاغات"""
+    q = update.callback_query
+    await q.answer()
+    lang = context.user_data.get("lang", "ar")
+    
+    count = await count_user_items(q.from_user.id)
+    
+    if count == 0:
+        await q.answer("لا توجد بلاغات لحذفها", show_alert=True)
+        return
+    
+    await q.edit_message_text(
+        f"⚠️ **تأكيد التصفير**\n\n"
+        f"هل أنت متأكد من حذف **كل** بلاغاتك؟\n"
+        f"📊 العدد: **{count}** بلاغ\n\n"
+        f"⚠️ لا يمكن التراجع عن هذه العملية!",
+        reply_markup=kb_confirm_clear(),
+        parse_mode="Markdown"
+    )
+
+
+async def cb_confirm_clear_yes(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """تنفيذ التصفير"""
+    q = update.callback_query
+    await q.answer()
+    lang = context.user_data.get("lang", "ar")
+    
+    count = await delete_all_user_items(q.from_user.id)
+    
+    await q.edit_message_text(
+        f"✅ **تم التصفير بنجاح!**\n\n"
+        f"🗑️ تم حذف **{count}** بلاغ\n\n"
+        f"يمكنك البدء من جديد.",
+        reply_markup=kb_main(lang),
+        parse_mode="Markdown"
+    )
+
+
+async def cb_confirm_clear_no(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """إلغاء التصفير"""
+    q = update.callback_query
+    await q.answer()
+    lang = context.user_data.get("lang", "ar")
+    
+    await q.edit_message_text(
+        "✅ **تم الإلغاء**\n\n"
+        "بلاغاتك في أمان.",
+        reply_markup=kb_main(lang),
+        parse_mode="Markdown"
+    )
 
 
 async def cb_matches(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -711,6 +1020,9 @@ app_tg.add_handler(CallbackQueryHandler(cb_time, pattern="^time_"))
 app_tg.add_handler(CallbackQueryHandler(cb_skip_photo, pattern="^skip_photo$"))
 app_tg.add_handler(CallbackQueryHandler(cb_search, pattern="^search$"))
 app_tg.add_handler(CallbackQueryHandler(cb_my, pattern="^my$"))
+app_tg.add_handler(CallbackQueryHandler(cb_clear_my, pattern="^clear_my$"))
+app_tg.add_handler(CallbackQueryHandler(cb_confirm_clear_yes, pattern="^confirm_clear_yes$"))
+app_tg.add_handler(CallbackQueryHandler(cb_confirm_clear_no, pattern="^confirm_clear_no$"))
 app_tg.add_handler(CallbackQueryHandler(cb_matches, pattern="^matches$"))
 app_tg.add_handler(CallbackQueryHandler(cb_help, pattern="^help$"))
 
@@ -739,45 +1051,26 @@ async def health():
         "handlers_count": len(app_tg.handlers[0]) if app_tg.handlers else 0,
         "has_token": bool(BOT_TOKEN),
         "has_db": bool(DATABASE_URL),
+        "has_nsfw_check": bool(SIGHTENGINE_USER and SIGHTENGINE_SECRET),
     }
 
 
 @app.post("/")
 async def webhook(request: Request):
-    """استقبال تحديثات Telegram"""
-    print("=" * 60)
-    print("📥 NEW WEBHOOK REQUEST")
-    
     try:
-        # 1. قراءة البيانات
         data = await request.json()
         update_id = data.get("update_id", "?")
-        print(f"📦 Update ID: {update_id}")
         
-        # 2. التحقق من Secret
         if WEBHOOK_SECRET:
             secret = request.headers.get("X-Telegram-Bot-Api-Secret-Token")
             if secret != WEBHOOK_SECRET:
-                print(f"❌ Secret mismatch")
-                raise HTTPException(status_code=403, detail="Invalid secret")
-            print(f"✅ Secret verified")
-        else:
-            print(f"⚠️ No secret configured")
+                raise HTTPException(status_code=403)
         
-        # 3. تهيئة البوت إذا لزم
         if not app_tg.running:
-            print("🔧 Initializing bot...")
             await app_tg.initialize()
-            print("✅ Bot initialized")
         
-        # 4. تحويل البيانات
         update = Update.de_json(data, app_tg.bot)
-        print(f"📨 Update type: message={bool(update.message)}, callback={bool(update.callback_query)}")
-        
-        # 5. معالجة
         await app_tg.process_update(update)
-        print(f"✅ Update {update_id} processed successfully")
-        print("=" * 60)
         
         return JSONResponse({"ok": True})
     
@@ -786,5 +1079,4 @@ async def webhook(request: Request):
     except Exception as e:
         print(f"❌ ERROR: {type(e).__name__}: {e}")
         traceback.print_exc()
-        print("=" * 60)
         return JSONResponse({"ok": False, "error": str(e)}, status_code=200)
