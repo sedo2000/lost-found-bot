@@ -4,7 +4,7 @@ Vercel-ready entrypoint: app
 """
 import os
 import re
-from datetime import datetime
+import traceback
 from typing import Optional, Dict, List, Tuple
 
 import asyncpg
@@ -27,6 +27,11 @@ load_dotenv()
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 WEBHOOK_SECRET = os.getenv("TELEGRAM_WEBHOOK_SECRET", "")
 DATABASE_URL = os.getenv("DATABASE_URL", "")
+
+print(f"🚀 Bot starting...")
+print(f"   BOT_TOKEN: {'✅ set' if BOT_TOKEN else '❌ MISSING'}")
+print(f"   WEBHOOK_SECRET: {'✅ set' if WEBHOOK_SECRET else '⚠️ not set'}")
+print(f"   DATABASE_URL: {'✅ set' if DATABASE_URL else '❌ MISSING'}")
 
 # ============ الثوابت ============
 CITIES = ["بغداد", "البصرة", "الموصل", "أربيل", "النجف", "كربلاء",
@@ -369,23 +374,32 @@ def kb_match_actions(match_id: int) -> InlineKeyboardMarkup:
 
 
 # ============ Telegram Application ============
+print("🔧 Building Telegram application...")
 app_tg = Application.builder().token(BOT_TOKEN).build()
+print(f"✅ Telegram app built")
 
 
 # ============ Handlers ============
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-    await get_or_create_user(user.id, user.username, user.first_name, user.last_name)
-    db_user = await get_user(user.id)
-    lang = db_user.get("lang", "ar") if db_user else "ar"
-    context.user_data.clear()
-    context.user_data["lang"] = lang
-    stats = await get_global_stats()
-    await update.message.reply_text(
-        t(lang, "welcome", **stats),
-        reply_markup=kb_main(lang),
-        parse_mode="Markdown"
-    )
+    print(f"🎯 /start from user {update.effective_user.id}")
+    try:
+        user = update.effective_user
+        await get_or_create_user(user.id, user.username, user.first_name, user.last_name)
+        db_user = await get_user(user.id)
+        lang = db_user.get("lang", "ar") if db_user else "ar"
+        context.user_data.clear()
+        context.user_data["lang"] = lang
+        stats = await get_global_stats()
+        await update.message.reply_text(
+            t(lang, "welcome", **stats),
+            reply_markup=kb_main(lang),
+            parse_mode="Markdown"
+        )
+        print(f"✅ /start handled")
+    except Exception as e:
+        print(f"❌ Error in /start: {e}")
+        traceback.print_exc()
+        await update.message.reply_text(f"❌ خطأ: {e}")
 
 
 async def cb_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -461,6 +475,8 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     state = context.user_data.get("state")
     lang = context.user_data.get("lang", "ar")
     text = update.message.text.strip()
+
+    print(f"📝 Text received: '{text[:50]}' (state={state})")
 
     if state == "waiting_description":
         if len(text) < 5:
@@ -566,6 +582,8 @@ async def finalize_item(message, context, lang: str, is_callback: bool = False):
             await message.reply_text(text, reply_markup=kb_main(lang), parse_mode="Markdown")
 
     except Exception as e:
+        print(f"❌ Error in finalize_item: {e}")
+        traceback.print_exc()
         error_text = f"❌ خطأ: {e}"
         if is_callback:
             await message.edit_text(error_text, reply_markup=kb_main(lang))
@@ -680,6 +698,8 @@ async def cb_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # ============ Register Handlers ============
+print("🔧 Registering handlers...")
+
 app_tg.add_handler(CommandHandler("start", cmd_start))
 app_tg.add_handler(CallbackQueryHandler(cb_menu, pattern="^menu$"))
 app_tg.add_handler(CallbackQueryHandler(cb_add, pattern="^add$"))
@@ -697,6 +717,8 @@ app_tg.add_handler(CallbackQueryHandler(cb_help, pattern="^help$"))
 app_tg.add_handler(MessageHandler(filters.PHOTO, handle_photo))
 app_tg.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
 
+print(f"✅ {len(app_tg.handlers[0])} handlers registered")
+
 
 # ============================================================
 # ⭐ FastAPI App (Vercel Entrypoint)
@@ -711,27 +733,58 @@ async def root():
 
 @app.get("/health")
 async def health():
-    return {"status": "healthy"}
+    return {
+        "status": "healthy",
+        "bot_running": app_tg.running,
+        "handlers_count": len(app_tg.handlers[0]) if app_tg.handlers else 0,
+        "has_token": bool(BOT_TOKEN),
+        "has_db": bool(DATABASE_URL),
+    }
 
 
 @app.post("/")
 async def webhook(request: Request):
     """استقبال تحديثات Telegram"""
-    if WEBHOOK_SECRET:
-        secret = request.headers.get("X-Telegram-Bot-Api-Secret-Token")
-        if secret != WEBHOOK_SECRET:
-            raise HTTPException(status_code=403, detail="Invalid secret")
-
+    print("=" * 60)
+    print("📥 NEW WEBHOOK REQUEST")
+    
     try:
+        # 1. قراءة البيانات
         data = await request.json()
-        update = Update.de_json(data, app_tg.bot)
-
+        update_id = data.get("update_id", "?")
+        print(f"📦 Update ID: {update_id}")
+        
+        # 2. التحقق من Secret
+        if WEBHOOK_SECRET:
+            secret = request.headers.get("X-Telegram-Bot-Api-Secret-Token")
+            if secret != WEBHOOK_SECRET:
+                print(f"❌ Secret mismatch")
+                raise HTTPException(status_code=403, detail="Invalid secret")
+            print(f"✅ Secret verified")
+        else:
+            print(f"⚠️ No secret configured")
+        
+        # 3. تهيئة البوت إذا لزم
         if not app_tg.running:
+            print("🔧 Initializing bot...")
             await app_tg.initialize()
-
+            print("✅ Bot initialized")
+        
+        # 4. تحويل البيانات
+        update = Update.de_json(data, app_tg.bot)
+        print(f"📨 Update type: message={bool(update.message)}, callback={bool(update.callback_query)}")
+        
+        # 5. معالجة
         await app_tg.process_update(update)
+        print(f"✅ Update {update_id} processed successfully")
+        print("=" * 60)
+        
         return JSONResponse({"ok": True})
-
+    
+    except HTTPException:
+        raise
     except Exception as e:
-        print(f"❌ Error: {e}")
+        print(f"❌ ERROR: {type(e).__name__}: {e}")
+        traceback.print_exc()
+        print("=" * 60)
         return JSONResponse({"ok": False, "error": str(e)}, status_code=200)
