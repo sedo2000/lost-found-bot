@@ -1,5 +1,6 @@
 """
 🔍 Lost & Found Bot - Complete Bot in One File
+Vercel-ready entrypoint: app
 """
 import os
 import re
@@ -57,12 +58,6 @@ CATEGORIES = {
     "other": {"ar": "📦 أخرى", "subs": {"other": "📦 أخرى"}},
 }
 
-TIME_LABELS = {
-    "time_1h": "آخر ساعة", "time_today": "اليوم",
-    "time_yesterday": "أمس", "time_week": "هذا الأسبوع",
-    "time_month": "هذا الشهر", "time_older": "أقدم",
-}
-
 # ============ قاعدة البيانات ============
 _pool: Optional[asyncpg.Pool] = None
 
@@ -76,7 +71,6 @@ async def get_pool() -> asyncpg.Pool:
     return _pool
 
 
-# ============ Users ============
 async def get_or_create_user(user_id: int, username: str = None,
                              first_name: str = None, last_name: str = None) -> Dict:
     pool = await get_pool()
@@ -108,15 +102,6 @@ async def get_user(user_id: int) -> Optional[Dict]:
         return dict(row) if row else None
 
 
-async def set_user_lang(user_id: int, lang: str):
-    pool = await get_pool()
-    async with pool.acquire() as conn:
-        await conn.execute(
-            "UPDATE users SET lang = $1 WHERE user_id = $2", lang, user_id
-        )
-
-
-# ============ Items ============
 async def create_item(user_id: int, item_type: str, category: str,
                      subcategory: str, description: str, city: str,
                      time_range: str, photo_file_id: str = None) -> Dict:
@@ -219,24 +204,20 @@ def time_to_hours(t: str) -> int:
 
 def calculate_score(lost: Dict, found: Dict) -> int:
     score = 0
-    # الفئة
     if lost.get("category") == found.get("category"):
         score += 25
         if lost.get("subcategory") == found.get("subcategory"):
             score += 15
     else:
         return 0
-    # الموقع
     if lost.get("location_city") == found.get("location_city"):
         score += 20
-    # الوقت
     diff = abs(time_to_hours(lost.get("time_range", "")) -
                time_to_hours(found.get("time_range", "")))
     if diff <= 6:
         score += 15
     elif diff <= 24:
         score += 10
-    # الوصف
     lw = extract_words(lost.get("description", ""))
     fw = extract_words(found.get("description", ""))
     if lw and fw:
@@ -273,10 +254,6 @@ MSG = {
     "ar": {
         "welcome": (
             "🔍 **بوت المفقودات**\n\n"
-            "نساعدك في:\n"
-            "• 📝 إيجاد ما فقدته\n"
-            "• 🎁 إرجاع ما وجدته\n\n"
-            "📊 **إحصائيات:**\n"
             "📕 مفقود: {total_lost}\n"
             "📗 موجود: {total_found}\n"
             "🎯 حالات نجاح: {total_resolved}\n"
@@ -285,37 +262,33 @@ MSG = {
         "choose_type": "📝 **ما نوع البلاغ؟**",
         "choose_category": "🏷️ **اختر الفئة:**",
         "choose_subcategory": "📂 **اختر الفئة الفرعية:**",
-        "enter_description": "✍️ **صف الشيء بالتفصيل:**\n\nمثال: _محفظة جلدية بنية فيها هوية_",
+        "enter_description": "✍️ **صف الشيء بالتفصيل:**",
         "choose_city": "📍 **اختر المحافظة:**",
         "choose_time": "⏰ **متى؟**",
         "send_photo": "📸 **أرسل صورة (اختياري):**",
-        "item_created": "🎉 **تم نشر بلاغك!**\n\n📋 رقم البلاغ: `#{number}`\n\n🔍 نبحث عن تطابقات...",
+        "item_created": "🎉 **تم نشر بلاغك!**\n\n📋 رقم البلاغ: `#{number}`",
         "search_prompt": "🔍 **ما الذي تبحث عنه؟**",
         "no_results": "❌ **لا توجد نتائج**",
         "no_items": "📭 **لا توجد بلاغات**",
         "my_items": "📋 **بلاغاتي ({count})**",
         "no_matches": "🔍 **لا توجد تطابقات**",
-        "match_found": "🎯 **تطابق!**\n\n📊 النسبة: **{score}%**",
-        "match_confirmed": "🎉 **تم التأكيد!**",
-        "help": "📖 **المساعدة**\n\n• أضف بلاغ\n• ابحث\n• تابع بلاغاتك",
+        "help": "📖 **المساعدة**",
     },
     "en": {
-        "welcome": "🔍 **Lost & Found Bot**\n\n📕 Lost: {total_lost}\n📗 Found: {total_found}\n🎯 Success: {total_resolved}",
-        "choose_type": "📝 **Report type?**",
+        "welcome": "🔍 **Lost & Found**\n\n📕 {total_lost} | 📗 {total_found} | 🎯 {total_resolved}",
+        "choose_type": "📝 **Type?**",
         "choose_category": "🏷️ **Category:**",
-        "choose_subcategory": "📂 **Subcategory:**",
+        "choose_subcategory": "📂 **Sub:**",
         "enter_description": "✍️ **Describe:**",
         "choose_city": "📍 **City:**",
         "choose_time": "⏰ **When?**",
-        "send_photo": "📸 **Send photo (optional):**",
+        "send_photo": "📸 **Photo (optional):**",
         "item_created": "🎉 **Published!** #{number}",
         "search_prompt": "🔍 **Search:**",
         "no_results": "❌ **No results**",
         "no_items": "📭 **No reports**",
-        "my_items": "📋 **My reports ({count})**",
+        "my_items": "📋 **Mine ({count})**",
         "no_matches": "🔍 **No matches**",
-        "match_found": "🎯 **Match!** {score}%",
-        "match_confirmed": "🎉 **Confirmed!**",
         "help": "📖 **Help**",
     }
 }
@@ -332,27 +305,19 @@ def t(lang: str, key: str, **kw) -> str:
 # ============ Keyboards ============
 def kb_main(lang: str = "ar") -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("📝 أضف بلاغ" if lang == "ar" else "📝 Add",
-                              callback_data="add")],
-        [InlineKeyboardButton("🔍 ابحث" if lang == "ar" else "🔍 Search",
-                              callback_data="search")],
-        [InlineKeyboardButton("📋 بلاغاتي" if lang == "ar" else "📋 Mine",
-                              callback_data="my"),
-         InlineKeyboardButton("🎯 التطابقات" if lang == "ar" else "🎯 Matches",
-                              callback_data="matches")],
-        [InlineKeyboardButton("ℹ️ مساعدة" if lang == "ar" else "ℹ️ Help",
-                              callback_data="help")],
+        [InlineKeyboardButton("📝 أضف بلاغ" if lang == "ar" else "📝 Add", callback_data="add")],
+        [InlineKeyboardButton("🔍 ابحث" if lang == "ar" else "🔍 Search", callback_data="search")],
+        [InlineKeyboardButton("📋 بلاغاتي" if lang == "ar" else "📋 Mine", callback_data="my"),
+         InlineKeyboardButton("🎯 التطابقات" if lang == "ar" else "🎯 Matches", callback_data="matches")],
+        [InlineKeyboardButton("ℹ️ مساعدة" if lang == "ar" else "ℹ️ Help", callback_data="help")],
     ])
 
 
 def kb_type(lang: str = "ar") -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("📕 مفقود" if lang == "ar" else "📕 Lost",
-                              callback_data="type_lost"),
-         InlineKeyboardButton("📗 موجود" if lang == "ar" else "📗 Found",
-                              callback_data="type_found")],
-        [InlineKeyboardButton("🔙 رجوع" if lang == "ar" else "🔙 Back",
-                              callback_data="menu")],
+        [InlineKeyboardButton("📕 مفقود" if lang == "ar" else "📕 Lost", callback_data="type_lost"),
+         InlineKeyboardButton("📗 موجود" if lang == "ar" else "📗 Found", callback_data="type_found")],
+        [InlineKeyboardButton("🔙 رجوع" if lang == "ar" else "🔙 Back", callback_data="menu")],
     ])
 
 
@@ -368,9 +333,7 @@ def kb_subcategories(cat_key: str) -> InlineKeyboardMarkup:
     rows = []
     cat = CATEGORIES.get(cat_key, {})
     for sub_key, sub_name in cat.get("subs", {}).items():
-        rows.append([InlineKeyboardButton(
-            sub_name, callback_data=f"sub_{cat_key}_{sub_key}"
-        )])
+        rows.append([InlineKeyboardButton(sub_name, callback_data=f"sub_{cat_key}_{sub_key}")])
     rows.append([InlineKeyboardButton("🔙 رجوع", callback_data="add")])
     return InlineKeyboardMarkup(rows)
 
@@ -395,13 +358,6 @@ def kb_times(lang: str = "ar") -> InlineKeyboardMarkup:
         [InlineKeyboardButton("🕐 أمس", callback_data="time_yesterday"),
          InlineKeyboardButton("🕐 هذا الأسبوع", callback_data="time_week")],
         [InlineKeyboardButton("⏭️ تخطي الصورة", callback_data="skip_photo")],
-    ])
-
-
-def kb_item_actions(item_id: int, lang: str = "ar") -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton("✅ تم الحل", callback_data=f"resolve_{item_id}")],
-        [InlineKeyboardButton("🗑️ حذف", callback_data=f"delete_{item_id}")],
     ])
 
 
@@ -502,12 +458,10 @@ async def cb_subcategory(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """معالج النصوص - يعالج حالات متعددة"""
     state = context.user_data.get("state")
     lang = context.user_data.get("lang", "ar")
     text = update.message.text.strip()
 
-    # وصف
     if state == "waiting_description":
         if len(text) < 5:
             await update.message.reply_text("❌ الوصف قصير")
@@ -520,7 +474,6 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode="Markdown"
         )
 
-    # بحث
     elif state == "searching":
         results = await search_items(query=text)
         context.user_data["state"] = None
@@ -533,10 +486,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"🔍 نتائج البحث ({len(results)}):")
         for item in results[:5]:
             await send_item_card(update.message, item, lang)
-        await update.message.reply_text(
-            "🔙",
-            reply_markup=kb_main(lang)
-        )
+        await update.message.reply_text("🔙", reply_markup=kb_main(lang))
 
 
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -586,13 +536,8 @@ async def cb_skip_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def finalize_item(message, context, lang: str, is_callback: bool = False):
-    """حفظ البلاغ النهائي"""
     item = context.user_data.get("item", {})
-    user_id = message.chat.id if is_callback else message.from_user.id
-
-    # في حالة callback، from_user
-    if is_callback:
-        user_id = message.chat.id
+    user_id = message.chat.id
 
     try:
         saved = await create_item(
@@ -606,14 +551,12 @@ async def finalize_item(message, context, lang: str, is_callback: bool = False):
             photo_file_id=item.get("photo_file_id"),
         )
 
-        # البحث عن تطابقات
         matches = await find_matches(saved)
 
         context.user_data.clear()
         context.user_data["lang"] = lang
 
         text = t(lang, "item_created", number=saved["report_number"])
-
         if matches:
             text += f"\n\n🎯 **{len(matches)} تطابق محتمل!**"
 
@@ -631,7 +574,6 @@ async def finalize_item(message, context, lang: str, is_callback: bool = False):
 
 
 async def send_item_card(message, item: Dict, lang: str):
-    """بطاقة بلاغ"""
     type_emoji = "📕" if item["type"] == "lost" else "📗"
     cat = CATEGORIES.get(item["category"], {}).get("ar", "")
     sub = CATEGORIES.get(item["category"], {}).get("subs", {}).get(item.get("subcategory", ""), "")
@@ -687,30 +629,7 @@ async def cb_my(update: Update, context: ContextTypes.DEFAULT_TYPE):
     for item in items:
         await send_item_card(q.message, item, lang)
 
-    await q.message.reply_text(
-        "🔙",
-        reply_markup=kb_main(lang)
-    )
-
-
-async def cb_resolve(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    q = update.callback_query
-    await q.answer("✅")
-    item_id = int(q.data.replace("resolve_", ""))
-    await resolve_item(item_id)
-    lang = context.user_data.get("lang", "ar")
-    await q.edit_message_text("🎉 تم تحديث البلاغ", reply_markup=kb_main(lang))
-
-
-async def cb_delete(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    q = update.callback_query
-    await q.answer("🗑️")
-    item_id = int(q.data.replace("delete_", ""))
-    pool = await get_pool()
-    async with pool.acquire() as conn:
-        await conn.execute("UPDATE items SET status='hidden' WHERE id=$1", item_id)
-    lang = context.user_data.get("lang", "ar")
-    await q.edit_message_text("🗑️ تم الحذف", reply_markup=kb_main(lang))
+    await q.message.reply_text("🔙", reply_markup=kb_main(lang))
 
 
 async def cb_matches(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -746,11 +665,7 @@ async def cb_matches(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"📕 {m['lost_desc'][:60]}\n"
             f"📗 {m['found_desc'][:60]}"
         )
-        await q.message.reply_text(
-            text,
-            reply_markup=kb_match_actions(m["id"]),
-            parse_mode="Markdown"
-        )
+        await q.message.reply_text(text, reply_markup=kb_match_actions(m["id"]), parse_mode="Markdown")
 
 
 async def cb_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -776,33 +691,36 @@ app_tg.add_handler(CallbackQueryHandler(cb_time, pattern="^time_"))
 app_tg.add_handler(CallbackQueryHandler(cb_skip_photo, pattern="^skip_photo$"))
 app_tg.add_handler(CallbackQueryHandler(cb_search, pattern="^search$"))
 app_tg.add_handler(CallbackQueryHandler(cb_my, pattern="^my$"))
-app_tg.add_handler(CallbackQueryHandler(cb_resolve, pattern="^resolve_"))
-app_tg.add_handler(CallbackQueryHandler(cb_delete, pattern="^delete_"))
 app_tg.add_handler(CallbackQueryHandler(cb_matches, pattern="^matches$"))
 app_tg.add_handler(CallbackQueryHandler(cb_help, pattern="^help$"))
 
-# الصورة أولاً
 app_tg.add_handler(MessageHandler(filters.PHOTO, handle_photo))
-# النص آخراً (مهم!)
 app_tg.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
 
 
-# ============ FastAPI ============
-api = FastAPI()
+# ============================================================
+# ⭐ FastAPI App (Vercel Entrypoint)
+# ============================================================
+app = FastAPI()
 
 
-@api.get("/")
+@app.get("/")
 async def root():
     return {"status": "ok", "bot": "Lost & Found"}
 
 
-@api.post("/")
+@app.get("/health")
+async def health():
+    return {"status": "healthy"}
+
+
+@app.post("/")
 async def webhook(request: Request):
-    # التحقق من Secret
+    """استقبال تحديثات Telegram"""
     if WEBHOOK_SECRET:
         secret = request.headers.get("X-Telegram-Bot-Api-Secret-Token")
         if secret != WEBHOOK_SECRET:
-            raise HTTPException(403)
+            raise HTTPException(status_code=403, detail="Invalid secret")
 
     try:
         data = await request.json()
@@ -817,7 +735,3 @@ async def webhook(request: Request):
     except Exception as e:
         print(f"❌ Error: {e}")
         return JSONResponse({"ok": False, "error": str(e)}, status_code=200)
-
-
-# Vercel handler
-handler = api
