@@ -1,7 +1,9 @@
 """
-🔍 Lost & Found Bot v4.1
-- سريع + كل الأزرار تعمل + تواصل مباشر + مساعدة تفصيلية
-- محسّن للأداء على Vercel
+🔍 Lost & Found Bot v4.3
+- حل مشكلة BadRequest
+- تحويل edit_message_text إلى send_message عند الفشل
+- error handlers محسّن
+- كل الميزات السابقة
 """
 import os
 import re
@@ -14,6 +16,7 @@ from dotenv import load_dotenv
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import JSONResponse
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.error import BadRequest
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -32,7 +35,7 @@ DATABASE_URL = os.getenv("DATABASE_URL", "")
 SIGHTENGINE_USER = os.getenv("SIGHTENGINE_USER", "")
 SIGHTENGINE_SECRET = os.getenv("SIGHTENGINE_SECRET", "")
 
-print(f"🚀 Bot v4.1 starting...")
+print(f"🚀 Bot v4.3 starting...")
 
 # ============ الثوابت ============
 CITIES = ["بغداد", "البصرة", "الموصل", "أربيل", "النجف", "كربلاء",
@@ -278,6 +281,50 @@ async def get_user_messages(user_id: int, limit: int = 10) -> List[Dict]:
         return [dict(r) for r in rows]
 
 
+# ============ 🆕 دوال مساعدة للرد الآمن ============
+async def safe_edit_or_send(query, text: str, reply_markup=None, parse_mode="Markdown"):
+    """
+    🆕 يحاول edit_message_text، وإذا فشل يرسل رسالة جديدة
+    هذا يحل مشكلة BadRequest عند الرسائل القديمة
+    """
+    try:
+        await query.edit_message_text(
+            text,
+            reply_markup=reply_markup,
+            parse_mode=parse_mode
+        )
+    except BadRequest as e:
+        # الرسالة قديمة أو لا يمكن تعديلها
+        print(f"⚠️ Cannot edit message: {e}, sending new one")
+        try:
+            await query.message.reply_text(
+                text,
+                reply_markup=reply_markup,
+                parse_mode=parse_mode
+            )
+        except Exception as e2:
+            print(f"❌ Cannot send new message: {e2}")
+
+
+async def safe_edit_message(message, text: str, reply_markup=None, parse_mode="Markdown"):
+    """🆕 نسخة آمنة للـ callback message"""
+    try:
+        await message.edit_text(
+            text,
+            reply_markup=reply_markup,
+            parse_mode=parse_mode
+        )
+    except BadRequest:
+        try:
+            await message.reply_text(
+                text,
+                reply_markup=reply_markup,
+                parse_mode=parse_mode
+            )
+        except Exception as e2:
+            print(f"❌ Cannot send: {e2}")
+
+
 # ============ NSFW ============
 async def check_image_nsfw(file_id: str) -> Tuple[bool, str]:
     if not SIGHTENGINE_USER or not SIGHTENGINE_SECRET:
@@ -293,7 +340,7 @@ async def check_image_nsfw(file_id: str) -> Tuple[bool, str]:
                 return True, "telegram_error"
             file_path = file_data["result"]["file_path"]
             file_url = f"https://api.telegram.org/file/bot{BOT_TOKEN}/{file_path}"
-            
+
             check_resp = await client.get(
                 "https://api.sightengine.com/1.0/check.json",
                 params={
@@ -306,18 +353,18 @@ async def check_image_nsfw(file_id: str) -> Tuple[bool, str]:
             result = check_resp.json()
             if result.get("status") != "success":
                 return True, "sightengine_error"
-            
+
             nudity = result.get("nudity", {})
             weapon = result.get("weapon", {})
             gore = result.get("gore", {})
-            
+
             reasons = []
             if nudity.get("sexual_activity", 0) > 0.5: reasons.append("محتوى جنسي")
             if nudity.get("sexual_display", 0) > 0.5: reasons.append("عرض جنسي")
             if nudity.get("erotica", 0) > 0.7: reasons.append("إباحي")
             if weapon.get("classes", {}).get("firearm", 0) > 0.7: reasons.append("سلاح")
             if gore.get("prob", 0) > 0.7: reasons.append("عنف")
-            
+
             return (False, ", ".join(reasons)) if reasons else (True, "safe")
     except Exception as e:
         print(f"❌ NSFW error: {e}")
@@ -647,29 +694,21 @@ async def cb_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.clear()
     context.user_data["lang"] = lang
     stats = await get_global_stats()
-    await q.edit_message_text(
-        t(lang, "welcome", **stats),
-        reply_markup=kb_main(lang),
-        parse_mode="Markdown"
-    )
+    await safe_edit_or_send(q, t(lang, "welcome", **stats), kb_main(lang))
 
 
 async def cb_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
     lang = context.user_data.get("lang", "ar")
-    await q.edit_message_text(
-        t(lang, "help"),
-        reply_markup=kb_main(lang),
-        parse_mode="Markdown"
-    )
+    await safe_edit_or_send(q, t(lang, "help"), kb_main(lang))
 
 
 async def cb_add(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
     if await is_user_banned(q.from_user.id):
-        await q.edit_message_text("🚫 أنت محظور")
+        await safe_edit_or_send(q, "🚫 أنت محظور")
         return
     lang = context.user_data.get("lang", "ar")
     context.user_data.clear()
@@ -678,11 +717,7 @@ async def cb_add(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["item"] = {}
     context.user_data["photos"] = []
     context.user_data["contact"] = {}
-    await q.edit_message_text(
-        t(lang, "choose_type"),
-        reply_markup=kb_type(lang),
-        parse_mode="Markdown"
-    )
+    await safe_edit_or_send(q, t(lang, "choose_type"), kb_type(lang))
 
 
 async def cb_type(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -692,11 +727,7 @@ async def cb_type(update: Update, context: ContextTypes.DEFAULT_TYPE):
     item = context.user_data.setdefault("item", {})
     item["type"] = "lost" if q.data == "type_lost" else "found"
     context.user_data["state"] = "choosing_category"
-    await q.edit_message_text(
-        t(lang, "choose_category"),
-        reply_markup=kb_categories(lang),
-        parse_mode="Markdown"
-    )
+    await safe_edit_or_send(q, t(lang, "choose_category"), kb_categories(lang))
 
 
 async def cb_category(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -706,11 +737,7 @@ async def cb_category(update: Update, context: ContextTypes.DEFAULT_TYPE):
     cat_key = q.data.replace("cat_", "")
     context.user_data["item"]["category"] = cat_key
     context.user_data["state"] = "choosing_subcategory"
-    await q.edit_message_text(
-        t(lang, "choose_subcategory"),
-        reply_markup=kb_subcategories(cat_key),
-        parse_mode="Markdown"
-    )
+    await safe_edit_or_send(q, t(lang, "choose_subcategory"), kb_subcategories(cat_key))
 
 
 async def cb_subcategory(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -721,10 +748,7 @@ async def cb_subcategory(update: Update, context: ContextTypes.DEFAULT_TYPE):
     sub_key = parts[2] if len(parts) > 2 else "other"
     context.user_data["item"]["subcategory"] = sub_key
     context.user_data["state"] = "waiting_description"
-    await q.edit_message_text(
-        t(lang, "enter_description"),
-        parse_mode="Markdown"
-    )
+    await safe_edit_or_send(q, t(lang, "enter_description"))
 
 
 async def cb_city(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -734,11 +758,7 @@ async def cb_city(update: Update, context: ContextTypes.DEFAULT_TYPE):
     city = q.data.replace("city_", "")
     context.user_data["item"]["location_city"] = city
     context.user_data["state"] = "choosing_time"
-    await q.edit_message_text(
-        t(lang, "choose_time"),
-        reply_markup=kb_times(lang),
-        parse_mode="Markdown"
-    )
+    await safe_edit_or_send(q, t(lang, "choose_time"), kb_times(lang))
 
 
 async def cb_time(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -747,11 +767,7 @@ async def cb_time(update: Update, context: ContextTypes.DEFAULT_TYPE):
     lang = context.user_data.get("lang", "ar")
     context.user_data["item"]["time_range"] = q.data
     context.user_data["state"] = "choosing_contact_method"
-    await q.edit_message_text(
-        t(lang, "choose_contact"),
-        reply_markup=kb_contact_info(lang),
-        parse_mode="Markdown"
-    )
+    await safe_edit_or_send(q, t(lang, "choose_contact"), kb_contact_info(lang))
 
 
 async def cb_back_to_time(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -759,11 +775,7 @@ async def cb_back_to_time(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await q.answer()
     lang = context.user_data.get("lang", "ar")
     context.user_data["state"] = "choosing_time"
-    await q.edit_message_text(
-        t(lang, "choose_time"),
-        reply_markup=kb_times(lang),
-        parse_mode="Markdown"
-    )
+    await safe_edit_or_send(q, t(lang, "choose_time"), kb_times(lang))
 
 
 async def cb_contact_method(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -774,7 +786,7 @@ async def cb_contact_method(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["contact_type"] = contact_type
     context.user_data["state"] = "waiting_contact_value"
     text = t(lang, "ask_username") if contact_type == "username" else t(lang, "ask_phone")
-    await q.edit_message_text(text, parse_mode="Markdown")
+    await safe_edit_or_send(q, text)
 
 
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -793,14 +805,14 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             errors.append(f"• {MIN_DESC_WORDS} كلمات على الأقل")
         if len(set(words)) < 3:
             errors.append("• الوصف يبدو عشوائياً")
-        
+
         if errors:
             await update.message.reply_text(
                 "❌ **الوصف غير مقبول:**\n\n" + "\n".join(errors) + "\n\n✍️ أرسل وصفاً أدق:",
                 parse_mode="Markdown"
             )
             return
-        
+
         context.user_data["item"]["description"] = text
         context.user_data["state"] = "choosing_city"
         await update.message.reply_text(
@@ -834,7 +846,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 )
                 return
             context.user_data["contact"] = {"type": "phone", "value": phone}
-        
+
         context.user_data["state"] = "waiting_photos"
         await update.message.reply_text(
             f"✅ **تم حفظ الاتصال**\n\n"
@@ -863,7 +875,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if state and state.startswith("sending_message_to_"):
         target_user_id = int(state.replace("sending_message_to_", ""))
         item_id = context.user_data.get("msg_item_id")
-        
+
         try:
             await save_direct_message(
                 from_user_id=update.effective_user.id,
@@ -871,7 +883,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 message=text,
                 item_id=item_id,
             )
-            
+
             sender_name = update.effective_user.first_name or "مستخدم"
             try:
                 await app_tg.bot.send_message(
@@ -886,7 +898,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 )
             except Exception as e:
                 print(f"⚠️ Cannot notify recipient: {e}")
-            
+
             context.user_data["state"] = None
             await update.message.reply_text(
                 "✅ **تم إرسال رسالتك!**\n\n"
@@ -906,14 +918,14 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     state = context.user_data.get("state")
     lang = context.user_data.get("lang", "ar")
     user_id = update.effective_user.id
-    
+
     if await is_user_banned(user_id):
         await update.message.reply_text("🚫 أنت محظور")
         return
-    
+
     if state != "waiting_photos":
         return
-    
+
     photos = context.user_data.get("photos", [])
     if len(photos) >= MAX_PHOTOS:
         await update.message.reply_text(
@@ -921,15 +933,15 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=kb_photos_done(lang)
         )
         return
-    
+
     photo = update.message.photo[-1]
     file_id = photo.file_id
-    
+
     checking_msg = await update.message.reply_text("🔍 فحص...")
-    
+
     try:
         is_safe, reason = await check_image_nsfw(file_id)
-        
+
         if not is_safe:
             warning_count = await add_warning(user_id)
             if warning_count >= MAX_WARNINGS:
@@ -947,11 +959,11 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     parse_mode="Markdown"
                 )
             return
-        
+
         photos.append(file_id)
         context.user_data["photos"] = photos
         await checking_msg.delete()
-        
+
         await update.message.reply_text(
             f"✅ **تم إضافة الصورة {len(photos)}/{MAX_PHOTOS}**\n\n"
             f"أرسل صورة أخرى، أو اضغط 'تم'.",
@@ -987,12 +999,12 @@ async def show_review(query, context):
     item = context.user_data.get("item", {})
     contact = context.user_data.get("contact", {})
     photos = context.user_data.get("photos", [])
-    
+
     type_label = "📕 مفقود" if item["type"] == "lost" else "📗 موجود"
     cat = CATEGORIES.get(item["category"], {}).get("ar", item["category"])
     sub = CATEGORIES.get(item["category"], {}).get("subs", {}).get(item.get("subcategory", ""), "")
     contact_type_label = "💬 يوزر" if contact.get("type") == "username" else "📱 هاتف"
-    
+
     text = (
         f"✅ **مراجعة البلاغ**\n\n"
         f"📕 **النوع:** {type_label}\n"
@@ -1004,9 +1016,9 @@ async def show_review(query, context):
         f"📸 **الصور:** {len(photos)}\n\n"
         f"⚠️ **تأكد أن المعلومات صحيحة!**"
     )
-    
+
     context.user_data["state"] = "confirming"
-    await query.edit_message_text(text, reply_markup=kb_review(lang), parse_mode="Markdown")
+    await safe_edit_or_send(query, text, kb_review(lang))
 
 
 async def cb_confirm_item(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1022,11 +1034,7 @@ async def cb_cancel_item(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.clear()
     context.user_data["lang"] = lang
     stats = await get_global_stats()
-    await q.edit_message_text(
-        t(lang, "welcome", **stats),
-        reply_markup=kb_main(lang),
-        parse_mode="Markdown"
-    )
+    await safe_edit_or_send(q, t(lang, "welcome", **stats), kb_main(lang))
 
 
 async def finalize_item(message, context, lang: str, is_callback: bool = False):
@@ -1067,18 +1075,24 @@ async def finalize_item(message, context, lang: str, is_callback: bool = False):
             text += f"\n\n🎯 **{len(matches)} تطابق محتمل!**\n"
             text += "اذهب إلى '🎯 التطابقات' للتفاصيل."
 
-        if is_callback:
-            await message.edit_text(text, reply_markup=kb_main(lang), parse_mode="Markdown")
-        else:
+        try:
+            if is_callback:
+                await message.edit_text(text, reply_markup=kb_main(lang), parse_mode="Markdown")
+            else:
+                await message.reply_text(text, reply_markup=kb_main(lang), parse_mode="Markdown")
+        except BadRequest:
             await message.reply_text(text, reply_markup=kb_main(lang), parse_mode="Markdown")
 
     except Exception as e:
         print(f"❌ Error: {e}")
         traceback.print_exc()
         error_text = f"❌ خطأ: {e}"
-        if is_callback:
-            await message.edit_text(error_text, reply_markup=kb_main(lang))
-        else:
+        try:
+            if is_callback:
+                await message.edit_text(error_text, reply_markup=kb_main(lang))
+            else:
+                await message.reply_text(error_text, reply_markup=kb_main(lang))
+        except BadRequest:
             await message.reply_text(error_text, reply_markup=kb_main(lang))
 
 
@@ -1110,12 +1124,10 @@ async def cb_search(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await q.answer()
     lang = context.user_data.get("lang", "ar")
     context.user_data["state"] = "searching"
-    await q.edit_message_text(
+    await safe_edit_or_send(
+        q,
         t(lang, "search_prompt"),
-        reply_markup=InlineKeyboardMarkup([[
-            InlineKeyboardButton("🔙 رجوع", callback_data="menu")
-        ]]),
-        parse_mode="Markdown"
+        InlineKeyboardMarkup([[InlineKeyboardButton("🔙 رجوع", callback_data="menu")]])
     )
 
 
@@ -1126,17 +1138,13 @@ async def cb_my(update: Update, context: ContextTypes.DEFAULT_TYPE):
     items = await get_user_items(q.from_user.id, limit=10)
 
     if not items:
-        await q.edit_message_text(
-            t(lang, "no_items"),
-            reply_markup=kb_main(lang),
-            parse_mode="Markdown"
-        )
+        await safe_edit_or_send(q, t(lang, "no_items"), kb_main(lang))
         return
 
-    await q.edit_message_text(
+    await safe_edit_or_send(
+        q,
         t(lang, "my_items", count=len(items)),
-        reply_markup=kb_my_items_actions(),
-        parse_mode="Markdown"
+        kb_my_items_actions()
     )
 
     for item in items:
@@ -1150,12 +1158,10 @@ async def cb_clear_my(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if count == 0:
         await q.answer("لا توجد بلاغات", show_alert=True)
         return
-    await q.edit_message_text(
-        f"⚠️ **تأكيد التصفير**\n\n"
-        f"حذف **{count}** بلاغ؟\n\n"
-        f"⚠️ لا يمكن التراجع!",
-        reply_markup=kb_confirm_clear(),
-        parse_mode="Markdown"
+    await safe_edit_or_send(
+        q,
+        f"⚠️ **تأكيد التصفير**\n\nحذف **{count}** بلاغ؟\n\n⚠️ لا يمكن التراجع!",
+        kb_confirm_clear()
     )
 
 
@@ -1164,10 +1170,10 @@ async def cb_confirm_clear_yes(update: Update, context: ContextTypes.DEFAULT_TYP
     await q.answer()
     lang = context.user_data.get("lang", "ar")
     count = await delete_all_user_items(q.from_user.id)
-    await q.edit_message_text(
+    await safe_edit_or_send(
+        q,
         f"✅ **تم التصفير!**\n\n🗑️ حُذف **{count}** بلاغ",
-        reply_markup=kb_main(lang),
-        parse_mode="Markdown"
+        kb_main(lang)
     )
 
 
@@ -1175,7 +1181,7 @@ async def cb_confirm_clear_no(update: Update, context: ContextTypes.DEFAULT_TYPE
     q = update.callback_query
     await q.answer()
     lang = context.user_data.get("lang", "ar")
-    await q.edit_message_text("✅ **تم الإلغاء**", reply_markup=kb_main(lang))
+    await safe_edit_or_send(q, "✅ **تم الإلغاء**", kb_main(lang))
 
 
 async def cb_matches(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1197,18 +1203,14 @@ async def cb_matches(update: Update, context: ContextTypes.DEFAULT_TYPE):
         """, q.from_user.id)
 
     if not rows:
-        await q.edit_message_text(
-            t(lang, "no_matches"),
-            reply_markup=kb_main(lang),
-            parse_mode="Markdown"
-        )
+        await safe_edit_or_send(q, t(lang, "no_matches"), kb_main(lang))
         return
 
-    await q.edit_message_text(f"🎯 **التطابقات ({len(rows)})**")
-    
+    await safe_edit_or_send(q, f"🎯 **التطابقات ({len(rows)})**")
+
     for row in rows:
         m = dict(row)
-        
+
         if m['lost_user'] == q.from_user.id:
             other_user_id = m['found_user']
             other_desc = m['found_desc']
@@ -1221,14 +1223,14 @@ async def cb_matches(update: Update, context: ContextTypes.DEFAULT_TYPE):
             other_contact = m['lost_contact']
             other_cmethod = m['lost_cmethod']
             other_type = "📕 صاحب المفقود"
-        
+
         if other_cmethod == "username":
             contact_label = "💬 يوزر تلجرام"
             contact_display = other_contact or "—"
         else:
             contact_label = "📱 رقم هاتف"
             contact_display = other_contact or "—"
-        
+
         text = (
             f"🎯 **تطابق #{m['id']}** — {m['score']}%\n\n"
             f"{other_type}\n"
@@ -1236,14 +1238,11 @@ async def cb_matches(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"━━━━━━━━━━━━━━━\n"
             f"**معلومات الاتصال:**\n"
             f"{contact_label}: `{contact_display}`\n"
-            f"━━━━━━━━━━━━━━━\n\n"
-            f"💡 **يمكنك:**\n"
-            f"• التواصل مباشرة\n"
-            f"• أو استخدام زر 'رسالة مباشرة'"
+            f"━━━━━━━━━━━━━━━"
         )
-        
+
         buttons = []
-        
+
         if other_cmethod == "username" and other_contact:
             tg_username = other_contact.lstrip("@")
             buttons.append([InlineKeyboardButton(
@@ -1255,12 +1254,12 @@ async def cb_matches(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "📱 الاتصال",
                 url=f"tel:{other_contact}"
             )])
-        
+
         buttons.append([InlineKeyboardButton(
             "💬 إرسال رسالة من البوت",
             callback_data=f"msg_owner_{other_user_id}_{m['id']}"
         )])
-        
+
         await q.message.reply_text(
             text,
             reply_markup=InlineKeyboardMarkup(buttons),
@@ -1272,18 +1271,19 @@ async def cb_msg_owner(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
     lang = context.user_data.get("lang", "ar")
-    
+
     parts = q.data.split("_")
     target_user_id = int(parts[2])
     match_id = int(parts[3]) if len(parts) > 3 else None
-    
+
     context.user_data["state"] = f"sending_message_to_{target_user_id}"
     context.user_data["msg_item_id"] = match_id
-    
+
     target_user = await get_user(target_user_id)
     target_name = target_user.get("first_name", "المستخدم") if target_user else "المستخدم"
-    
-    await q.edit_message_text(
+
+    await safe_edit_or_send(
+        q,
         f"💬 **إرسال رسالة إلى:** {target_name}\n\n"
         f"✍️ اكتب رسالتك الآن:\n\n"
         f"💡 **نصائح:**\n"
@@ -1291,8 +1291,7 @@ async def cb_msg_owner(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"• حدد مكان ووقت التسليم\n"
         f"• كن مهذباً\n\n"
         f"⚠️ سيتم إشعاره فوراً برسالتك.",
-        reply_markup=kb_cancel_message(lang),
-        parse_mode="Markdown"
+        kb_cancel_message(lang)
     )
 
 
@@ -1301,37 +1300,30 @@ async def cb_cancel_msg(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await q.answer()
     lang = context.user_data.get("lang", "ar")
     context.user_data["state"] = None
-    await q.edit_message_text(
-        "❌ تم إلغاء الرسالة",
-        reply_markup=kb_main(lang)
-    )
+    await safe_edit_or_send(q, "❌ تم إلغاء الرسالة", kb_main(lang))
 
 
 async def cb_inbox(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
     lang = context.user_data.get("lang", "ar")
-    
+
     messages = await get_user_messages(q.from_user.id, limit=10)
-    
+
     if not messages:
-        await q.edit_message_text(
-            t(lang, "no_messages"),
-            reply_markup=kb_main(lang),
-            parse_mode="Markdown"
-        )
+        await safe_edit_or_send(q, t(lang, "no_messages"), kb_main(lang))
         return
-    
-    await q.edit_message_text(
+
+    await safe_edit_or_send(
+        q,
         t(lang, "inbox", count=len(messages)),
-        reply_markup=kb_inbox_back(lang),
-        parse_mode="Markdown"
+        kb_inbox_back(lang)
     )
-    
+
     for msg in messages:
         sender_name = msg.get("from_name") or "مستخدم"
         sender_username = msg.get("from_username")
-        
+
         text = (
             f"📬 **رسالة جديدة**\n\n"
             f"👤 من: {sender_name}"
@@ -1339,7 +1331,7 @@ async def cb_inbox(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if sender_username:
             text += f" (@{sender_username})"
         text += f"\n\n💬 {msg['message']}"
-        
+
         buttons = []
         if sender_username:
             buttons.append([InlineKeyboardButton(
@@ -1350,7 +1342,7 @@ async def cb_inbox(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "💬 رد من البوت",
             callback_data=f"msg_owner_{msg['from_user_id']}_0"
         )])
-        
+
         await q.message.reply_text(
             text,
             reply_markup=InlineKeyboardMarkup(buttons),
@@ -1398,41 +1390,50 @@ print(f"✅ {len(app_tg.handlers[0])} handlers registered")
 app = FastAPI()
 
 
-# ============ Error Handler ============
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
-    """معالج الأخطاء - يمنع رسالة "No error handlers" """
-    print(f"⚠️ Exception while handling update: {context.error}")
-    traceback.print_exception(
-        type(context.error), context.error, context.error.__traceback__
-    )
-    
-    # محاولة إعلام المستخدم
+    """معالج الأخطاء"""
+    print(f"⚠️ EXCEPTION: {context.error}")
+    if context.error:
+        traceback.print_exception(
+            type(context.error),
+            context.error,
+            context.error.__traceback__
+        )
+
+    # إعلام المستخدم
     try:
-        if isinstance(update, Update) and update.effective_message:
-            await update.effective_message.reply_text(
-                "❌ حدث خطأ. حاول مرة أخرى.\n\n"
-                f"التفاصيل: {type(context.error).__name__}",
-            )
+        if isinstance(update, Update):
+            if update.effective_message:
+                await update.effective_message.reply_text(
+                    "❌ حدث خطأ. حاول مرة أخرى."
+                )
+            elif update.callback_query:
+                await update.callback_query.answer(
+                    "❌ حدث خطأ", show_alert=True
+                )
     except:
         pass
 
 
-# تسجيل error handler
 app_tg.add_error_handler(error_handler)
+print("✅ Error handler registered")
 
 
 @app.get("/")
 async def root():
-    return {"status": "ok", "bot": "Lost & Found v4.1"}
+    return {"status": "ok", "bot": "Lost & Found v4.3"}
 
 
 @app.get("/health")
 async def health():
     return {
         "status": "healthy",
-        "version": "4.1",
+        "version": "4.3",
         "bot_running": app_tg.running,
         "handlers_count": len(app_tg.handlers[0]) if app_tg.handlers else 0,
+        "has_token": bool(BOT_TOKEN),
+        "has_db": bool(DATABASE_URL),
+        "has_nsfw": bool(SIGHTENGINE_USER and SIGHTENGINE_SECRET),
     }
 
 
@@ -1440,53 +1441,37 @@ async def health():
 async def webhook(request: Request):
     try:
         data = await request.json()
-        
-        # 🆕 Logging مفصّل
         update_id = data.get("update_id", "?")
+
         print(f"\n{'='*60}")
-        print(f"📥 Update ID: {update_id}")
-        
-        # نوع التحديث
+        print(f"📥 UPDATE #{update_id}")
+
         if "message" in data:
-            msg = data["message"]
-            text = msg.get("text", "")
-            print(f"📨 Message: {text[:50]}")
+            text = data["message"].get("text", "")
+            print(f"📨 Message: {text[:40]}")
         elif "callback_query" in data:
-            cb = data["callback_query"]
-            cb_data = cb.get("data", "")
+            cb_data = data["callback_query"].get("data", "")
             print(f"🔘 Callback: {cb_data}")
-        elif "edited_message" in data:
-            print(f"✏️ Edited message")
-        else:
-            print(f"❓ Unknown update type: {list(data.keys())}")
-        
-        # Secret
+
         if WEBHOOK_SECRET:
             secret = request.headers.get("X-Telegram-Bot-Api-Secret-Token")
             if secret != WEBHOOK_SECRET:
                 print(f"❌ Secret mismatch")
                 raise HTTPException(status_code=403)
-        
-        # Init
+
         if not app_tg.running:
-            print(f"🔧 Initializing app...")
             await app_tg.initialize()
-            print(f"✅ App initialized, running={app_tg.running}")
-        
-        # Process
+
         update = Update.de_json(data, app_tg.bot)
-        print(f"🎯 Processing...")
         await app_tg.process_update(update)
-        print(f"✅ Processed successfully")
+        print(f"✅ Processed")
         print(f"{'='*60}\n")
-        
+
         return JSONResponse({"ok": True})
-    
+
     except HTTPException:
         raise
     except Exception as e:
-        print(f"\n{'='*60}")
-        print(f"❌ ERROR: {type(e).__name__}: {e}")
+        print(f"\n❌ ERROR: {type(e).__name__}: {e}")
         traceback.print_exc()
-        print(f"{'='*60}\n")
         return JSONResponse({"ok": False, "error": str(e)}, status_code=200)
