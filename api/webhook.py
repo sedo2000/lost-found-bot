@@ -1,6 +1,7 @@
 """
-🔍 Lost & Found Bot v4.0
+🔍 Lost & Found Bot v4.1
 - سريع + كل الأزرار تعمل + تواصل مباشر + مساعدة تفصيلية
+- محسّن للأداء على Vercel
 """
 import os
 import re
@@ -31,7 +32,7 @@ DATABASE_URL = os.getenv("DATABASE_URL", "")
 SIGHTENGINE_USER = os.getenv("SIGHTENGINE_USER", "")
 SIGHTENGINE_SECRET = os.getenv("SIGHTENGINE_SECRET", "")
 
-print(f"🚀 Bot v4.0 starting...")
+print(f"🚀 Bot v4.1 starting...")
 
 # ============ الثوابت ============
 CITIES = ["بغداد", "البصرة", "الموصل", "أربيل", "النجف", "كربلاء",
@@ -82,31 +83,6 @@ async def get_pool() -> asyncpg.Pool:
     return _pool
 
 
-async def init_db():
-    """🆕 تهيئة الجداول الناقصة عند البدء"""
-    pool = await get_pool()
-    async with pool.acquire() as conn:
-        # أعمدة items الجديدة
-        await conn.execute("ALTER TABLE items ADD COLUMN IF NOT EXISTS contact_method VARCHAR(20)")
-        await conn.execute("ALTER TABLE items ADD COLUMN IF NOT EXISTS contact_value VARCHAR(100)")
-        await conn.execute("ALTER TABLE items ADD COLUMN IF NOT EXISTS photos TEXT[]")
-        # جدول الرسائل
-        await conn.execute("""
-            CREATE TABLE IF NOT EXISTS direct_messages (
-                id BIGSERIAL PRIMARY KEY,
-                from_user_id BIGINT NOT NULL,
-                to_user_id BIGINT NOT NULL,
-                item_id BIGINT,
-                match_id BIGINT,
-                message TEXT,
-                is_read BOOLEAN DEFAULT FALSE,
-                created_at TIMESTAMP DEFAULT NOW()
-            )
-        """)
-        await conn.execute("CREATE INDEX IF NOT EXISTS idx_dm_to ON direct_messages(to_user_id, is_read)")
-        await conn.execute("CREATE INDEX IF NOT EXISTS idx_dm_from ON direct_messages(from_user_id)")
-
-
 async def get_or_create_user(user_id: int, username: str = None,
                              first_name: str = None, last_name: str = None) -> Dict:
     pool = await get_pool()
@@ -141,14 +117,6 @@ async def get_user(user_id: int) -> Optional[Dict]:
 async def add_warning(user_id: int) -> int:
     pool = await get_pool()
     async with pool.acquire() as conn:
-        await conn.execute("""
-            CREATE TABLE IF NOT EXISTS warnings (
-                id BIGSERIAL PRIMARY KEY,
-                user_id BIGINT NOT NULL,
-                reason VARCHAR(200),
-                created_at TIMESTAMP DEFAULT NOW()
-            )
-        """)
         await conn.execute(
             "INSERT INTO warnings (user_id, reason) VALUES ($1, $2)",
             user_id, "صورة غير لائقة"
@@ -161,13 +129,6 @@ async def add_warning(user_id: int) -> int:
 async def is_user_banned(user_id: int) -> bool:
     pool = await get_pool()
     async with pool.acquire() as conn:
-        await conn.execute("""
-            CREATE TABLE IF NOT EXISTS banned_users (
-                user_id BIGINT PRIMARY KEY,
-                reason VARCHAR(200),
-                banned_at TIMESTAMP DEFAULT NOW()
-            )
-        """)
         return await conn.fetchrow(
             "SELECT * FROM banned_users WHERE user_id = $1", user_id
         ) is not None
@@ -322,7 +283,7 @@ async def check_image_nsfw(file_id: str) -> Tuple[bool, str]:
     if not SIGHTENGINE_USER or not SIGHTENGINE_SECRET:
         return True, "no_check"
     try:
-        async with httpx.AsyncClient(timeout=8) as client:
+        async with httpx.AsyncClient(timeout=6) as client:
             file_resp = await client.get(
                 f"https://api.telegram.org/bot{BOT_TOKEN}/getFile",
                 params={"file_id": file_id}
@@ -436,31 +397,30 @@ MSG = {
             "📝 **كيف أضيف بلاغ؟**\n"
             "1️⃣ اضغط '📝 أضف بلاغ'\n"
             "2️⃣ اختر: مفقود أم موجود\n"
-            "3️⃣ اختر الفئة (محفظة، مفاتيح، هاتف...)\n"
-            "4️⃣ اكتب **وصفاً دقيقاً** (20+ حرف، 4+ كلمات)\n"
+            "3️⃣ اختر الفئة\n"
+            "4️⃣ اكتب وصفاً دقيقاً (20+ حرف)\n"
             "5️⃣ حدد المحافظة والوقت\n"
-            "6️⃣ أضف **معلومات الاتصال** (إلزامي)\n"
-            "7️⃣ أضف صوراً (اختياري - يزيد الفرص 70%)\n\n"
+            "6️⃣ أضف معلومات الاتصال (إلزامي)\n"
+            "7️⃣ أضف صوراً (اختياري)\n\n"
             "━━━━━━━━━━━━━━━\n\n"
             "🎯 **كيف يعمل التطابق؟**\n"
-            "البوت يطابق تلقائياً بين:\n"
+            "البوت يطابق تلقائياً:\n"
             "• الفئة (40 نقطة)\n"
             "• الموقع (20 نقطة)\n"
             "• الوقت (15 نقطة)\n"
             "• الوصف (25 نقطة)\n\n"
-            "عند وجود تطابق → ستصلك إشعار\n"
-            "مع **معلومات الاتصال** وزر **تواصل مباشر**\n\n"
+            "عند التطابق → إشعار + زر تواصل مباشر\n\n"
             "━━━━━━━━━━━━━━━\n\n"
-            "💡 **نصائح للنجاح:**\n"
+            "💡 **نصائح:**\n"
             "✅ كن دقيقاً في الوصف\n"
             "✅ أضف صوراً\n"
-            "✅ تحقق من معلومات الاتصال\n"
-            "✅ تصفح 'التطابقات' يومياً\n\n"
+            "✅ تحقق من معلومات الاتصال\n\n"
             "━━━━━━━━━━━━━━━\n\n"
             "🛡️ **الحماية:**\n"
-            "• الصور غير اللائقة = حظر فوري\n"
-            "• معلومات الاتصال محفوظة بأمان\n\n"
-            "❓ للاستفسار: تواصل مع الإدارة"
+            "• صور غير لائقة = حظر فوري\n\n"
+            "📬 **رسائلي:**\n"
+            "استقبل رسائل من أصحاب البلاغات\n"
+            "ورد عليها من داخل البوت"
         ),
         "choose_type": "📝 **ما نوع البلاغ؟**",
         "choose_category": "🏷️ **اختر الفئة:**",
@@ -506,7 +466,7 @@ MSG = {
     },
     "en": {
         "welcome": "🔍 **Lost & Found**\n\n📕 {total_lost} | 📗 {total_found} | 🎯 {total_resolved}",
-        "help": "📖 **Bot Guide**\n\nHelp content here...",
+        "help": "📖 **Bot Guide**\n\nHelp content...",
         "choose_type": "📝 **Type?**",
         "choose_category": "🏷️ **Category:**",
         "choose_subcategory": "📂 **Sub:**",
@@ -642,17 +602,6 @@ def kb_confirm_clear() -> InlineKeyboardMarkup:
     ])
 
 
-def kb_contact_owner(item_id: int, lang: str = "ar") -> InlineKeyboardMarkup:
-    """🆕 زر التواصل مع صاحب البلاغ"""
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton(
-            "💬 أرسل رسالة لصاحب البلاغ" if lang == "ar" else "💬 Message Owner",
-            callback_data=f"msg_owner_{item_id}"
-        )],
-        [InlineKeyboardButton("🔙 رجوع", callback_data="menu")],
-    ])
-
-
 def kb_cancel_message(lang: str = "ar") -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("❌ إلغاء" if lang == "ar" else "❌ Cancel", callback_data="cancel_msg")],
@@ -706,7 +655,6 @@ async def cb_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def cb_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """🆕 مساعدة تفصيلية"""
     q = update.callback_query
     await q.answer()
     lang = context.user_data.get("lang", "ar")
@@ -834,7 +782,6 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     lang = context.user_data.get("lang", "ar")
     text = update.message.text.strip()
 
-    # ===== الوصف =====
     if state == "waiting_description":
         errors = []
         if len(text) < MIN_DESC_LEN:
@@ -863,7 +810,6 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # ===== معلومات الاتصال =====
     if state == "waiting_contact_value":
         contact_type = context.user_data.get("contact_type")
         if contact_type == "username":
@@ -899,7 +845,6 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # ===== البحث =====
     if state == "searching":
         results = await search_items(query=text)
         context.user_data["state"] = None
@@ -915,7 +860,6 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("🔙", reply_markup=kb_main(lang))
         return
 
-    # ===== 🆕 إرسال رسالة لصاحب بلاغ =====
     if state and state.startswith("sending_message_to_"):
         target_user_id = int(state.replace("sending_message_to_", ""))
         item_id = context.user_data.get("msg_item_id")
@@ -928,7 +872,6 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 item_id=item_id,
             )
             
-            # إرسال إشعار للمستقبل
             sender_name = update.effective_user.first_name or "مستخدم"
             try:
                 await app_tg.bot.send_message(
@@ -1235,7 +1178,6 @@ async def cb_confirm_clear_no(update: Update, context: ContextTypes.DEFAULT_TYPE
     await q.edit_message_text("✅ **تم الإلغاء**", reply_markup=kb_main(lang))
 
 
-# 🆕 التطابقات مع عرض معلومات الاتصال وزر التواصل
 async def cb_matches(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
@@ -1267,7 +1209,6 @@ async def cb_matches(update: Update, context: ContextTypes.DEFAULT_TYPE):
     for row in rows:
         m = dict(row)
         
-        # تحديد من هو الطرف الآخر
         if m['lost_user'] == q.from_user.id:
             other_user_id = m['found_user']
             other_desc = m['found_desc']
@@ -1281,7 +1222,6 @@ async def cb_matches(update: Update, context: ContextTypes.DEFAULT_TYPE):
             other_cmethod = m['lost_cmethod']
             other_type = "📕 صاحب المفقود"
         
-        # تنسيق معلومات الاتصال
         if other_cmethod == "username":
             contact_label = "💬 يوزر تلجرام"
             contact_display = other_contact or "—"
@@ -1289,7 +1229,6 @@ async def cb_matches(update: Update, context: ContextTypes.DEFAULT_TYPE):
             contact_label = "📱 رقم هاتف"
             contact_display = other_contact or "—"
         
-        # رسالة التطابق
         text = (
             f"🎯 **تطابق #{m['id']}** — {m['score']}%\n\n"
             f"{other_type}\n"
@@ -1299,14 +1238,12 @@ async def cb_matches(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"{contact_label}: `{contact_display}`\n"
             f"━━━━━━━━━━━━━━━\n\n"
             f"💡 **يمكنك:**\n"
-            f"• التواصل مباشرة عبر المعلومات أعلاه\n"
-            f"• أو استخدام زر '💬 رسالة مباشرة'"
+            f"• التواصل مباشرة\n"
+            f"• أو استخدام زر 'رسالة مباشرة'"
         )
         
-        # أزرار
         buttons = []
         
-        # زر التواصل عبر تلجرام مباشرة
         if other_cmethod == "username" and other_contact:
             tg_username = other_contact.lstrip("@")
             buttons.append([InlineKeyboardButton(
@@ -1319,7 +1256,6 @@ async def cb_matches(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 url=f"tel:{other_contact}"
             )])
         
-        # 🆕 زر الرسالة المباشرة
         buttons.append([InlineKeyboardButton(
             "💬 إرسال رسالة من البوت",
             callback_data=f"msg_owner_{other_user_id}_{m['id']}"
@@ -1332,22 +1268,18 @@ async def cb_matches(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
 
-# 🆕 بدء إرسال رسالة لصاحب بلاغ
 async def cb_msg_owner(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
     lang = context.user_data.get("lang", "ar")
     
-    # pattern: msg_owner_{user_id}_{match_id}
     parts = q.data.split("_")
     target_user_id = int(parts[2])
     match_id = int(parts[3]) if len(parts) > 3 else None
     
-    # حفظ في context
     context.user_data["state"] = f"sending_message_to_{target_user_id}"
     context.user_data["msg_item_id"] = match_id
     
-    # جلب معلومات الهدف
     target_user = await get_user(target_user_id)
     target_name = target_user.get("first_name", "المستخدم") if target_user else "المستخدم"
     
@@ -1375,7 +1307,6 @@ async def cb_cancel_msg(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
-# 🆕 صندوق الرسائل
 async def cb_inbox(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
@@ -1462,31 +1393,21 @@ print(f"✅ {len(app_tg.handlers[0])} handlers registered")
 
 
 # ============================================================
-# ⭐ FastAPI App
+# ⭐ FastAPI App (Vercel Entrypoint)
 # ============================================================
 app = FastAPI()
 
 
-@app.on_event("startup")
-async def startup():
-    """🆕 تهيئة الجداول عند بدء التشغيل"""
-    try:
-        await init_db()
-        print("✅ Database initialized")
-    except Exception as e:
-        print(f"⚠️ DB init error: {e}")
-
-
 @app.get("/")
 async def root():
-    return {"status": "ok", "bot": "Lost & Found v4.0"}
+    return {"status": "ok", "bot": "Lost & Found v4.1"}
 
 
 @app.get("/health")
 async def health():
     return {
         "status": "healthy",
-        "version": "4.0",
+        "version": "4.1",
         "bot_running": app_tg.running,
         "handlers_count": len(app_tg.handlers[0]) if app_tg.handlers else 0,
         "has_token": bool(BOT_TOKEN),
