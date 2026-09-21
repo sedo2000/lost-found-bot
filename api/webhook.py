@@ -1398,6 +1398,29 @@ print(f"✅ {len(app_tg.handlers[0])} handlers registered")
 app = FastAPI()
 
 
+# ============ Error Handler ============
+async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
+    """معالج الأخطاء - يمنع رسالة "No error handlers" """
+    print(f"⚠️ Exception while handling update: {context.error}")
+    traceback.print_exception(
+        type(context.error), context.error, context.error.__traceback__
+    )
+    
+    # محاولة إعلام المستخدم
+    try:
+        if isinstance(update, Update) and update.effective_message:
+            await update.effective_message.reply_text(
+                "❌ حدث خطأ. حاول مرة أخرى.\n\n"
+                f"التفاصيل: {type(context.error).__name__}",
+            )
+    except:
+        pass
+
+
+# تسجيل error handler
+app_tg.add_error_handler(error_handler)
+
+
 @app.get("/")
 async def root():
     return {"status": "ok", "bot": "Lost & Found v4.1"}
@@ -1410,9 +1433,6 @@ async def health():
         "version": "4.1",
         "bot_running": app_tg.running,
         "handlers_count": len(app_tg.handlers[0]) if app_tg.handlers else 0,
-        "has_token": bool(BOT_TOKEN),
-        "has_db": bool(DATABASE_URL),
-        "has_nsfw": bool(SIGHTENGINE_USER and SIGHTENGINE_SECRET),
     }
 
 
@@ -1421,22 +1441,52 @@ async def webhook(request: Request):
     try:
         data = await request.json()
         
+        # 🆕 Logging مفصّل
+        update_id = data.get("update_id", "?")
+        print(f"\n{'='*60}")
+        print(f"📥 Update ID: {update_id}")
+        
+        # نوع التحديث
+        if "message" in data:
+            msg = data["message"]
+            text = msg.get("text", "")
+            print(f"📨 Message: {text[:50]}")
+        elif "callback_query" in data:
+            cb = data["callback_query"]
+            cb_data = cb.get("data", "")
+            print(f"🔘 Callback: {cb_data}")
+        elif "edited_message" in data:
+            print(f"✏️ Edited message")
+        else:
+            print(f"❓ Unknown update type: {list(data.keys())}")
+        
+        # Secret
         if WEBHOOK_SECRET:
             secret = request.headers.get("X-Telegram-Bot-Api-Secret-Token")
             if secret != WEBHOOK_SECRET:
+                print(f"❌ Secret mismatch")
                 raise HTTPException(status_code=403)
         
+        # Init
         if not app_tg.running:
+            print(f"🔧 Initializing app...")
             await app_tg.initialize()
+            print(f"✅ App initialized, running={app_tg.running}")
         
+        # Process
         update = Update.de_json(data, app_tg.bot)
+        print(f"🎯 Processing...")
         await app_tg.process_update(update)
+        print(f"✅ Processed successfully")
+        print(f"{'='*60}\n")
         
         return JSONResponse({"ok": True})
     
     except HTTPException:
         raise
     except Exception as e:
+        print(f"\n{'='*60}")
         print(f"❌ ERROR: {type(e).__name__}: {e}")
         traceback.print_exc()
+        print(f"{'='*60}\n")
         return JSONResponse({"ok": False, "error": str(e)}, status_code=200)
