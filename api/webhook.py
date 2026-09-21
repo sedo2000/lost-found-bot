@@ -1,7 +1,7 @@
 """
-🔍 Lost & Found Bot v4.4 FINAL
-- إصلاح BadRequest نهائياً
-- logging شامل
+🔍 Lost & Found Bot v4.5 FINAL
+- إصلاح BadRequest من Markdown
+- parse_mode=None افتراضياً
 - كل الأزرار تعمل
 """
 import os
@@ -34,7 +34,7 @@ DATABASE_URL = os.getenv("DATABASE_URL", "")
 SIGHTENGINE_USER = os.getenv("SIGHTENGINE_USER", "")
 SIGHTENGINE_SECRET = os.getenv("SIGHTENGINE_SECRET", "")
 
-print(f"🚀 Bot v4.4 starting...")
+print(f"🚀 Bot v4.5 FINAL starting...")
 print(f"   Token: {'✅' if BOT_TOKEN else '❌'}")
 print(f"   DB: {'✅' if DATABASE_URL else '❌'}")
 
@@ -247,28 +247,31 @@ async def get_user_messages(user_id: int, limit: int = 10) -> List[Dict]:
         return [dict(r) for r in rows]
 
 
-# ============ 🆕 رد آمن - المفتاح لحل المشكلة ============
-async def reply_or_edit(update: Update, text: str, reply_markup=None, parse_mode="Markdown"):
+# ============ 🆕 دالة الرد الآمن ============
+async def reply_or_edit(update: Update, text: str, reply_markup=None):
     """
-    دالة موحّدة:
-    - إذا كان callback_query → تعديل الرسالة (أو إرسال جديدة عند الفشل)
-    - إذا كان message → إرسال رسالة جديدة
+    🆕 دالة موحّدة:
+    - بدون parse_mode (لتجنب BadRequest)
+    - إذا فشل edit → يرسل رسالة جديدة
     """
     try:
         if update.callback_query:
             try:
                 await update.callback_query.edit_message_text(
-                    text, reply_markup=reply_markup, parse_mode=parse_mode
+                    text, reply_markup=reply_markup
                 )
-            except BadRequest:
-                # الرسالة قديمة أو غير قابلة للتعديل
-                await update.callback_query.message.reply_text(
-                    text, reply_markup=reply_markup, parse_mode=parse_mode
-                )
+            except BadRequest as e:
+                print(f"⚠️ edit failed: {e}, sending new")
+                try:
+                    await update.callback_query.message.reply_text(
+                        text, reply_markup=reply_markup
+                    )
+                except Exception as e2:
+                    print(f"⚠️ send failed: {e2}")
+                    # محاولة أخيرة بدون أي شيء
+                    await update.callback_query.message.reply_text(text)
         elif update.message:
-            await update.message.reply_text(
-                text, reply_markup=reply_markup, parse_mode=parse_mode
-            )
+            await update.message.reply_text(text, reply_markup=reply_markup)
     except Exception as e:
         print(f"⚠️ reply_or_edit error: {e}")
         traceback.print_exc()
@@ -371,84 +374,83 @@ async def find_matches(item: Dict) -> List[Tuple[Dict, int]]:
     return matches[:3]
 
 
-# ============ Messages ============
+# ============ Messages (بدون Markdown) ============
 MSG = {
     "ar": {
-        "welcome": "🔍 **بوت المفقودات**\n\n📕 مفقود: {total_lost}\n📗 موجود: {total_found}\n🎯 حالات نجاح: {total_resolved}\n👥 مستخدمون: {total_users}",
+        "welcome": "🔍 بوت المفقودات\n\n📕 مفقود: {total_lost}\n📗 موجود: {total_found}\n🎯 حالات نجاح: {total_resolved}\n👥 مستخدمون: {total_users}",
         "help": (
-            "📖 **دليل استخدام البوت**\n\n"
-            "🔍 **ما هو البوت؟**\n"
+            "📖 دليل استخدام البوت\n\n"
+            "🔍 ما هو البوت؟\n"
             "بوت ذكي يساعدك على:\n"
             "• 🔎 إيجاد ما فقدته\n"
             "• 📦 إرجاع ما وجدته\n\n"
             "━━━━━━━━━━━━━━━\n\n"
-            "📝 **كيف أضيف بلاغ؟**\n"
+            "📝 كيف أضيف بلاغ؟\n"
             "1️⃣ اضغط '📝 أضف بلاغ'\n"
             "2️⃣ اختر: مفقود/موجود\n"
             "3️⃣ اختر الفئة\n"
             "4️⃣ اكتب وصفاً دقيقاً\n"
             "5️⃣ حدد المحافظة والوقت\n"
-            "6️⃣ أضف معلومات الاتصال (إلزامي)\n"
+            "6️⃣ أضف معلومات الاتصال\n"
             "7️⃣ أضف صوراً\n\n"
             "━━━━━━━━━━━━━━━\n\n"
-            "🎯 **التطابق:**\n"
+            "🎯 التطابق:\n"
             "البوت يطابق تلقائياً:\n"
             "• الفئة (40 نقطة)\n"
             "• الموقع (20 نقطة)\n"
             "• الوقت (15 نقطة)\n"
             "• الوصف (25 نقطة)\n\n"
-            "عند التطابق → إشعار + تواصل مباشر\n\n"
             "━━━━━━━━━━━━━━━\n\n"
-            "💡 **نصائح:**\n"
+            "💡 نصائح:\n"
             "✅ كن دقيقاً في الوصف\n"
             "✅ أضف صوراً\n"
             "✅ تحقق من معلومات الاتصال\n\n"
             "━━━━━━━━━━━━━━━\n\n"
-            "🛡️ **الحماية:**\n"
+            "🛡️ الحماية:\n"
             "صور غير لائقة = حظر فوري\n\n"
-            "📬 **رسائلي:**\n"
+            "📬 رسائلي:\n"
             "استقبل رسائل ورد من داخل البوت"
         ),
-        "choose_type": "📝 **ما نوع البلاغ؟**",
-        "choose_category": "🏷️ **اختر الفئة:**",
-        "choose_subcategory": "📂 **اختر الفئة الفرعية:**",
-        "enter_description": f"✍️ **صف الشيء بالتفصيل**\n\n⚠️ **الشروط:**\n• {MIN_DESC_LEN}-{MAX_DESC_LEN} حرف\n• {MIN_DESC_WORDS} كلمات على الأقل\n• كن دقيقاً (اللون، الحجم، العلامات)\n\nمثال:\n_محفظة جلدية بنية، فيها هوية وبطاقة، عليها خدش_",
-        "choose_city": "📍 **اختر المحافظة:**",
-        "choose_time": "⏰ **متى؟**",
-        "choose_contact": "📞 **معلومات الاتصال**\n\n⚠️ **مطلوب:** وسيلة اتصال\n\nكيف يريد الناس التواصل معك؟",
-        "ask_username": "💬 **أرسل يوزر تلجرام**\n\nمثال: `@username`",
-        "ask_phone": "📱 **أرسل رقم هاتفك**\n\nمثال: `+9647712345678`",
-        "send_photo": f"📸 **أرسل صوراً**\n\nحتى **{MAX_PHOTOS}** صور.\nالصورة تزيد فرص الإيجاد 70%!",
-        "item_created": "🎉 **تم نشر بلاغك!**\n\n📋 رقم البلاغ: `#{number}`",
-        "search_prompt": "🔍 **ما الذي تبحث عنه؟**",
-        "no_results": "❌ **لا توجد نتائج**",
-        "no_items": "📭 **لا توجد بلاغات**",
-        "my_items": "📋 **بلاغاتي ({count})**",
-        "no_matches": "🔍 **لا توجد تطابقات**\n\nالبوت يبحث تلقائياً...",
-        "no_messages": "📭 **لا توجد رسائل**",
-        "inbox": "📬 **رسائلي ({count})**",
+        "choose_type": "📝 ما نوع البلاغ؟",
+        "choose_category": "🏷️ اختر الفئة:",
+        "choose_subcategory": "📂 اختر الفئة الفرعية:",
+        "enter_description": f"✍️ صف الشيء بالتفصيل\n\n⚠️ الشروط:\n• {MIN_DESC_LEN}-{MAX_DESC_LEN} حرف\n• {MIN_DESC_WORDS} كلمات على الأقل\n• كن دقيقاً (اللون، الحجم، العلامات)\n\nمثال:\nمحفظة جلدية بنية، فيها هوية وبطاقة، عليها خدش",
+        "choose_city": "📍 اختر المحافظة:",
+        "choose_time": "⏰ متى؟",
+        "choose_contact": "📞 معلومات الاتصال\n\n⚠️ مطلوب: وسيلة اتصال\n\nكيف يريد الناس التواصل معك؟",
+        "ask_username": "💬 أرسل يوزر تلجرام\n\nمثال: @username",
+        "ask_phone": "📱 أرسل رقم هاتفك\n\nمثال: +9647712345678",
+        "send_photo": f"📸 أرسل صوراً\n\nحتى {MAX_PHOTOS} صور.\nالصورة تزيد فرص الإيجاد 70%!",
+        "item_created": "🎉 تم نشر بلاغك!\n\n📋 رقم البلاغ: #{number}",
+        "search_prompt": "🔍 ما الذي تبحث عنه؟",
+        "no_results": "❌ لا توجد نتائج",
+        "no_items": "📭 لا توجد بلاغات",
+        "my_items": "📋 بلاغاتي ({count})",
+        "no_matches": "🔍 لا توجد تطابقات\n\nالبوت يبحث تلقائياً...",
+        "no_messages": "📭 لا توجد رسائل",
+        "inbox": "📬 رسائلي ({count})",
     },
     "en": {
-        "welcome": "🔍 **Lost & Found**\n\n📕 {total_lost} | 📗 {total_found} | 🎯 {total_resolved}",
-        "help": "📖 **Help**",
-        "choose_type": "📝 **Type?**",
-        "choose_category": "🏷️ **Category:**",
-        "choose_subcategory": "📂 **Sub:**",
-        "enter_description": "✍️ **Describe:**",
-        "choose_city": "📍 **City:**",
-        "choose_time": "⏰ **When?**",
-        "choose_contact": "📞 **Contact:**",
-        "ask_username": "💬 **Username:**",
-        "ask_phone": "📱 **Phone:**",
-        "send_photo": "📸 **Photos:**",
-        "item_created": "🎉 **Published!** #{number}",
-        "search_prompt": "🔍 **Search:**",
-        "no_results": "❌ **No results**",
-        "no_items": "📭 **No reports**",
-        "my_items": "📋 **Mine ({count})**",
-        "no_matches": "🔍 **No matches**",
-        "no_messages": "📭 **No messages**",
-        "inbox": "📬 **Inbox ({count})**",
+        "welcome": "🔍 Lost & Found\n\n📕 {total_lost} | 📗 {total_found} | 🎯 {total_resolved}",
+        "help": "📖 Help",
+        "choose_type": "📝 Type?",
+        "choose_category": "🏷️ Category:",
+        "choose_subcategory": "📂 Sub:",
+        "enter_description": "✍️ Describe:",
+        "choose_city": "📍 City:",
+        "choose_time": "⏰ When?",
+        "choose_contact": "📞 Contact:",
+        "ask_username": "💬 Username:",
+        "ask_phone": "📱 Phone:",
+        "send_photo": "📸 Photos:",
+        "item_created": "🎉 Published! #{number}",
+        "search_prompt": "🔍 Search:",
+        "no_results": "❌ No results",
+        "no_items": "📭 No reports",
+        "my_items": "📋 Mine ({count})",
+        "no_matches": "🔍 No matches",
+        "no_messages": "📭 No messages",
+        "inbox": "📬 Inbox ({count})",
     }
 }
 
@@ -559,7 +561,6 @@ print(f"✅ App built")
 
 # ============ Handlers ============
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    print(f"🎯 /start from {update.effective_user.id}")
     user = update.effective_user
     if await is_user_banned(user.id):
         await update.message.reply_text("🚫 أنت محظور")
@@ -570,13 +571,12 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.clear()
     context.user_data["lang"] = lang
     stats = await get_global_stats()
-    await update.message.reply_text(t(lang, "welcome", **stats), reply_markup=kb_main(lang), parse_mode="Markdown")
+    await update.message.reply_text(t(lang, "welcome", **stats), reply_markup=kb_main(lang))
 
 
 async def cb_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
-    print(f"🔘 menu")
     lang = context.user_data.get("lang", "ar")
     context.user_data.clear()
     context.user_data["lang"] = lang
@@ -587,7 +587,6 @@ async def cb_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def cb_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
-    print(f"🔘 help")
     lang = context.user_data.get("lang", "ar")
     await reply_or_edit(update, t(lang, "help"), kb_main(lang))
 
@@ -595,7 +594,6 @@ async def cb_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def cb_add(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
-    print(f"🔘 add")
     if await is_user_banned(q.from_user.id):
         await reply_or_edit(update, "🚫 محظور")
         return
@@ -612,7 +610,6 @@ async def cb_add(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def cb_type(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
-    print(f"🔘 type: {q.data}")
     lang = context.user_data.get("lang", "ar")
     item = context.user_data.setdefault("item", {})
     item["type"] = "lost" if q.data == "type_lost" else "found"
@@ -623,7 +620,6 @@ async def cb_type(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def cb_category(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
-    print(f"🔘 cat: {q.data}")
     lang = context.user_data.get("lang", "ar")
     cat_key = q.data.replace("cat_", "")
     context.user_data["item"]["category"] = cat_key
@@ -634,7 +630,6 @@ async def cb_category(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def cb_subcategory(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
-    print(f"🔘 sub: {q.data}")
     lang = context.user_data.get("lang", "ar")
     parts = q.data.split("_", 2)
     sub_key = parts[2] if len(parts) > 2 else "other"
@@ -646,7 +641,6 @@ async def cb_subcategory(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def cb_city(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
-    print(f"🔘 city: {q.data}")
     lang = context.user_data.get("lang", "ar")
     city = q.data.replace("city_", "")
     context.user_data["item"]["location_city"] = city
@@ -657,7 +651,6 @@ async def cb_city(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def cb_time(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
-    print(f"🔘 time: {q.data}")
     lang = context.user_data.get("lang", "ar")
     context.user_data["item"]["time_range"] = q.data
     context.user_data["state"] = "choosing_contact_method"
@@ -675,7 +668,6 @@ async def cb_back_to_time(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def cb_contact_method(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
-    print(f"🔘 contact: {q.data}")
     lang = context.user_data.get("lang", "ar")
     contact_type = q.data.replace("contact_", "")
     context.user_data["contact_type"] = contact_type
@@ -688,7 +680,6 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     state = context.user_data.get("state")
     lang = context.user_data.get("lang", "ar")
     text = update.message.text.strip()
-    print(f"📝 text: '{text[:30]}' | state: {state}")
 
     if state == "waiting_description":
         errors = []
@@ -699,12 +690,12 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if len(set(words)) < 3: errors.append("• الوصف عشوائي")
 
         if errors:
-            await update.message.reply_text("❌ **الوصف غير مقبول:**\n\n" + "\n".join(errors) + "\n\n✍️ أعد الإرسال:", parse_mode="Markdown")
+            await update.message.reply_text("❌ الوصف غير مقبول:\n\n" + "\n".join(errors) + "\n\n✍️ أعد الإرسال:")
             return
 
         context.user_data["item"]["description"] = text
         context.user_data["state"] = "choosing_city"
-        await update.message.reply_text("✅ **تم حفظ الوصف**\n\n📍 اختر المحافظة:", reply_markup=kb_cities(lang), parse_mode="Markdown")
+        await update.message.reply_text("✅ تم حفظ الوصف\n\n📍 اختر المحافظة:", reply_markup=kb_cities(lang))
         return
 
     if state == "waiting_contact_value":
@@ -712,20 +703,20 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if contact_type == "username":
             username = text.lstrip("@").strip()
             if not re.match(r'^[a-zA-Z][a-zA-Z0-9_]{4,31}$', username):
-                await update.message.reply_text("❌ **يوزر غير صحيح!**\n\nمثال: `@ahmed_2024`", parse_mode="Markdown")
+                await update.message.reply_text("❌ يوزر غير صحيح!\n\nمثال: @ahmed_2024")
                 return
             context.user_data["contact"] = {"type": "username", "value": f"@{username}"}
         else:
             phone = re.sub(r'[^\d+]', '', text)
             if len(phone) < 10 or len(phone) > 15:
-                await update.message.reply_text("❌ **رقم غير صحيح!**\n\nمثال: `+9647712345678`", parse_mode="Markdown")
+                await update.message.reply_text("❌ رقم غير صحيح!\n\nمثال: +9647712345678")
                 return
             context.user_data["contact"] = {"type": "phone", "value": phone}
 
         context.user_data["state"] = "waiting_photos"
         await update.message.reply_text(
-            f"✅ **تم حفظ الاتصال**\n\n📞 `{context.user_data['contact']['value']}`\n\n" + t(lang, "send_photo"),
-            reply_markup=kb_photos_done(lang), parse_mode="Markdown"
+            f"✅ تم حفظ الاتصال\n\n📞 {context.user_data['contact']['value']}\n\n" + t(lang, "send_photo"),
+            reply_markup=kb_photos_done(lang)
         )
         return
 
@@ -750,13 +741,12 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             try:
                 await app_tg.bot.send_message(
                     chat_id=target_user_id,
-                    text=f"📬 **رسالة جديدة!**\n\n👤 من: {sender_name}\n\n💬 {text}\n\nللرد اذهب إلى '📬 رسائلي'",
-                    parse_mode="Markdown"
+                    text=f"📬 رسالة جديدة!\n\n👤 من: {sender_name}\n\n💬 {text}\n\nللرد اذهب إلى '📬 رسائلي'"
                 )
             except:
                 pass
             context.user_data["state"] = None
-            await update.message.reply_text("✅ **تم إرسال رسالتك!**", reply_markup=kb_main(lang), parse_mode="Markdown")
+            await update.message.reply_text("✅ تم إرسال رسالتك!", reply_markup=kb_main(lang))
         except Exception as e:
             await update.message.reply_text(f"❌ فشل: {e}", reply_markup=kb_main(lang))
         return
@@ -766,7 +756,6 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     state = context.user_data.get("state")
     lang = context.user_data.get("lang", "ar")
     user_id = update.effective_user.id
-    print(f"📸 photo | state: {state}")
 
     if await is_user_banned(user_id):
         await update.message.reply_text("🚫 محظور")
@@ -790,11 +779,10 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
             warning_count = await add_warning(user_id)
             if warning_count >= MAX_WARNINGS:
                 await ban_user(user_id, f"محتوى غير لائق ({reason})")
-                await checking_msg.edit_text(f"🚫 **حُظرت**\n\n⚠️ {reason}", parse_mode="Markdown")
+                await checking_msg.edit_text(f"🚫 حُظرت\n\n⚠️ {reason}")
             else:
                 await checking_msg.edit_text(
-                    f"❌ **صورة مرفوضة!**\n\n⚠️ {reason}\n📊 التحذير: {warning_count}/{MAX_WARNINGS}\n\n📸 أرسل صورة أخرى:",
-                    parse_mode="Markdown"
+                    f"❌ صورة مرفوضة!\n\n⚠️ {reason}\n📊 التحذير: {warning_count}/{MAX_WARNINGS}\n\n📸 أرسل صورة أخرى:"
                 )
             return
 
@@ -802,8 +790,8 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["photos"] = photos
         await checking_msg.delete()
         await update.message.reply_text(
-            f"✅ **تم إضافة الصورة {len(photos)}/{MAX_PHOTOS}**\n\nأرسل صورة أخرى، أو اضغط 'تم'.",
-            reply_markup=kb_photos_done(lang), parse_mode="Markdown"
+            f"✅ تم إضافة الصورة {len(photos)}/{MAX_PHOTOS}\n\nأرسل صورة أخرى، أو اضغط 'تم'.",
+            reply_markup=kb_photos_done(lang)
         )
     except Exception as e:
         print(f"❌ photo error: {e}")
@@ -811,7 +799,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["photos"] = photos
         await checking_msg.delete()
         await update.message.reply_text(
-            f"✅ **تم إضافة الصورة {len(photos)}/{MAX_PHOTOS}**",
+            f"✅ تم إضافة الصورة {len(photos)}/{MAX_PHOTOS}",
             reply_markup=kb_photos_done(lang)
         )
 
@@ -819,14 +807,12 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def cb_photos_done(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
-    print(f"🔘 photos_done")
     await show_review(update, context)
 
 
 async def cb_photos_skip(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
-    print(f"🔘 photos_skip")
     context.user_data["photos"] = []
     await show_review(update, context)
 
@@ -843,15 +829,15 @@ async def show_review(update: Update, context):
     contact_type_label = "💬 يوزر" if contact.get("type") == "username" else "📱 هاتف"
 
     text = (
-        f"✅ **مراجعة البلاغ**\n\n"
-        f"📕 **النوع:** {type_label}\n"
-        f"🏷️ **الفئة:** {cat} > {sub}\n"
-        f"✍️ **الوصف:** {item.get('description', '')[:150]}\n"
-        f"📍 **الموقع:** {item.get('location_city', '—')}\n"
-        f"⏰ **الوقت:** {item.get('time_range', '—')}\n"
-        f"📞 **الاتصال:** {contact_type_label} — `{contact.get('value', '—')}`\n"
-        f"📸 **الصور:** {len(photos)}\n\n"
-        f"⚠️ **تأكد من المعلومات!**"
+        f"✅ مراجعة البلاغ\n\n"
+        f"📕 النوع: {type_label}\n"
+        f"🏷️ الفئة: {cat} > {sub}\n"
+        f"✍️ الوصف: {item.get('description', '')[:150]}\n"
+        f"📍 الموقع: {item.get('location_city', '—')}\n"
+        f"⏰ الوقت: {item.get('time_range', '—')}\n"
+        f"📞 الاتصال: {contact_type_label} — {contact.get('value', '—')}\n"
+        f"📸 الصور: {len(photos)}\n\n"
+        f"⚠️ تأكد من المعلومات!"
     )
     context.user_data["state"] = "confirming"
     await reply_or_edit(update, text, kb_review(lang))
@@ -860,14 +846,12 @@ async def show_review(update: Update, context):
 async def cb_confirm_item(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer("⏳")
-    print(f"🔘 confirm_item")
     await finalize_item(update, context, is_callback=True)
 
 
 async def cb_cancel_item(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer("❌")
-    print(f"🔘 cancel_item")
     lang = context.user_data.get("lang", "ar")
     context.user_data.clear()
     context.user_data["lang"] = lang
@@ -899,7 +883,7 @@ async def finalize_item(update: Update, context, is_callback: bool = False):
         context.user_data["lang"] = lang
         text = t(lang, "item_created", number=saved["report_number"])
         if matches:
-            text += f"\n\n🎯 **{len(matches)} تطابق محتمل!**"
+            text += f"\n\n🎯 {len(matches)} تطابق محتمل!"
         await reply_or_edit(update, text, kb_main(lang))
     except Exception as e:
         print(f"❌ finalize error: {e}")
@@ -911,20 +895,19 @@ async def send_item_card(message, item: Dict, lang: str):
     type_emoji = "📕" if item["type"] == "lost" else "📗"
     cat = CATEGORIES.get(item["category"], {}).get("ar", "")
     sub = CATEGORIES.get(item["category"], {}).get("subs", {}).get(item.get("subcategory", ""), "")
-    text = f"{type_emoji} **#{item['report_number']}**\n🏷️ {cat} > {sub}\n✍️ {item['description'][:100]}\n📍 {item.get('location_city', '—')}"
+    text = f"{type_emoji} #{item['report_number']}\n🏷️ {cat} > {sub}\n✍️ {item['description'][:100]}\n📍 {item.get('location_city', '—')}"
     await increment_views(item["id"])
     photos = item.get("photos") or []
     photo_id = photos[0] if photos else item.get("photo_file_id")
     if photo_id:
-        await message.reply_photo(photo_id, caption=text, parse_mode="Markdown")
+        await message.reply_photo(photo_id, caption=text)
     else:
-        await message.reply_text(text, parse_mode="Markdown")
+        await message.reply_text(text)
 
 
 async def cb_search(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
-    print(f"🔘 search")
     lang = context.user_data.get("lang", "ar")
     context.user_data["state"] = "searching"
     await reply_or_edit(update, t(lang, "search_prompt"),
@@ -934,7 +917,6 @@ async def cb_search(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def cb_my(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
-    print(f"🔘 my")
     lang = context.user_data.get("lang", "ar")
     items = await get_user_items(q.from_user.id, limit=10)
     if not items:
@@ -948,21 +930,19 @@ async def cb_my(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def cb_clear_my(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
-    print(f"🔘 clear_my")
     count = await count_user_items(q.from_user.id)
     if count == 0:
         await q.answer("لا توجد بلاغات", show_alert=True)
         return
-    await reply_or_edit(update, f"⚠️ **تأكيد التصفير**\n\nحذف **{count}** بلاغ؟\n\n⚠️ لا يمكن التراجع!", kb_confirm_clear())
+    await reply_or_edit(update, f"⚠️ تأكيد التصفير\n\nحذف {count} بلاغ؟\n\n⚠️ لا يمكن التراجع!", kb_confirm_clear())
 
 
 async def cb_confirm_clear_yes(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
-    print(f"🔘 confirm_clear_yes")
     lang = context.user_data.get("lang", "ar")
     count = await delete_all_user_items(q.from_user.id)
-    await reply_or_edit(update, f"✅ **تم التصفير!**\n\n🗑️ حُذف **{count}** بلاغ", kb_main(lang))
+    await reply_or_edit(update, f"✅ تم التصفير!\n\n🗑️ حُذف {count} بلاغ", kb_main(lang))
 
 
 async def cb_confirm_clear_no(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -975,7 +955,6 @@ async def cb_confirm_clear_no(update: Update, context: ContextTypes.DEFAULT_TYPE
 async def cb_matches(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
-    print(f"🔘 matches")
     lang = context.user_data.get("lang", "ar")
     pool = await get_pool()
     async with pool.acquire() as conn:
@@ -993,7 +972,7 @@ async def cb_matches(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await reply_or_edit(update, t(lang, "no_matches"), kb_main(lang))
         return
 
-    await reply_or_edit(update, f"🎯 **التطابقات ({len(rows)})**")
+    await reply_or_edit(update, f"🎯 التطابقات ({len(rows)})")
 
     for row in rows:
         m = dict(row)
@@ -1013,8 +992,8 @@ async def cb_matches(update: Update, context: ContextTypes.DEFAULT_TYPE):
         contact_label = "💬 يوزر تلجرام" if other_cmethod == "username" else "📱 رقم هاتف"
         contact_display = other_contact or "—"
 
-        text = (f"🎯 **تطابق #{m['id']}** — {m['score']}%\n\n{other_type}\n✍️ {other_desc[:120]}\n\n"
-                f"━━━━━━━━━━━━━━━\n**معلومات الاتصال:**\n{contact_label}: `{contact_display}`\n━━━━━━━━━━━━━━━")
+        text = (f"🎯 تطابق #{m['id']} — {m['score']}%\n\n{other_type}\n✍️ {other_desc[:120]}\n\n"
+                f"━━━━━━━━━━━━━━━\nمعلومات الاتصال:\n{contact_label}: {contact_display}\n━━━━━━━━━━━━━━━")
 
         buttons = []
         if other_cmethod == "username" and other_contact:
@@ -1023,13 +1002,12 @@ async def cb_matches(update: Update, context: ContextTypes.DEFAULT_TYPE):
             buttons.append([InlineKeyboardButton("📱 الاتصال", url=f"tel:{other_contact}")])
         buttons.append([InlineKeyboardButton("💬 إرسال رسالة", callback_data=f"msg_owner_{other_user_id}_{m['id']}")])
 
-        await q.message.reply_text(text, reply_markup=InlineKeyboardMarkup(buttons), parse_mode="Markdown")
+        await q.message.reply_text(text, reply_markup=InlineKeyboardMarkup(buttons))
 
 
 async def cb_msg_owner(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
-    print(f"🔘 msg_owner: {q.data}")
     lang = context.user_data.get("lang", "ar")
     parts = q.data.split("_")
     target_user_id = int(parts[2])
@@ -1039,7 +1017,7 @@ async def cb_msg_owner(update: Update, context: ContextTypes.DEFAULT_TYPE):
     target_user = await get_user(target_user_id)
     target_name = target_user.get("first_name", "المستخدم") if target_user else "المستخدم"
     await reply_or_edit(update,
-        f"💬 **إرسال رسالة إلى:** {target_name}\n\n✍️ اكتب رسالتك:\n\n"
+        f"💬 إرسال رسالة إلى: {target_name}\n\n✍️ اكتب رسالتك:\n\n"
         f"💡 اذكر تفاصيل الشيء، حدد وقت ومكان التسليم\n\n⚠️ سيتم إشعاره فوراً.",
         kb_cancel_message(lang))
 
@@ -1055,7 +1033,6 @@ async def cb_cancel_msg(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def cb_inbox(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
-    print(f"🔘 inbox")
     lang = context.user_data.get("lang", "ar")
     messages = await get_user_messages(q.from_user.id, limit=10)
     if not messages:
@@ -1065,7 +1042,7 @@ async def cb_inbox(update: Update, context: ContextTypes.DEFAULT_TYPE):
     for msg in messages:
         sender_name = msg.get("from_name") or "مستخدم"
         sender_username = msg.get("from_username")
-        text = f"📬 **رسالة**\n\n👤 من: {sender_name}"
+        text = f"📬 رسالة\n\n👤 من: {sender_name}"
         if sender_username:
             text += f" (@{sender_username})"
         text += f"\n\n💬 {msg['message']}"
@@ -1073,7 +1050,7 @@ async def cb_inbox(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if sender_username:
             buttons.append([InlineKeyboardButton("💬 الرد عبر تلجرام", url=f"https://t.me/{sender_username}")])
         buttons.append([InlineKeyboardButton("💬 رد من البوت", callback_data=f"msg_owner_{msg['from_user_id']}_0")])
-        await q.message.reply_text(text, reply_markup=InlineKeyboardMarkup(buttons), parse_mode="Markdown")
+        await q.message.reply_text(text, reply_markup=InlineKeyboardMarkup(buttons))
 
 
 # ============ Register ============
@@ -1130,13 +1107,13 @@ app_tg.add_error_handler(error_handler)
 
 @app.get("/")
 async def root():
-    return {"status": "ok", "bot": "Lost & Found v4.4"}
+    return {"status": "ok", "bot": "Lost & Found v4.5"}
 
 
 @app.get("/health")
 async def health():
     return {
-        "status": "healthy", "version": "4.4",
+        "status": "healthy", "version": "4.5",
         "handlers_count": len(app_tg.handlers[0]) if app_tg.handlers else 0,
     }
 
